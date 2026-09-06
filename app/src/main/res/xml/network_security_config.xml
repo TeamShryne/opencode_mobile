@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- opencode serve is typically plain HTTP on LAN (e.g. http://192.168.1.10:4096).
+         Allow cleartext for private networks; production HTTPS servers still work. -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

@@ -1,0 +1,25 @@
+# Gradle
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+.DS_Store
+
+# Android
+app/build/
+*/build/
+*.ap_
+*.apk
+*.aab
+!gradle/wrapper/gradle-wrapper.jar
+
+# Kotlin
+*.class
+
+# Local secrets — never commit real server passwords
+*.jks
+*.keystore
+
+# Opencode / agent
+.opencode/
