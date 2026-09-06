@@ -1,5 +1,6 @@
 package com.opencode.mobile.data
 
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
@@ -55,7 +56,7 @@ object Realtime {
 
     fun todos(p: JsonObject): List<Todo>? {
         val arr: JsonArray = (p["todos"] as? JsonArray) ?: return null
-        return runCatching { json.decodeFromJsonElement<List<Todo>>(arr) }.getOrNull()
+        return runCatching { json.decodeFromJsonElement(ListSerializer(Todo.serializer()), arr) }.getOrNull()
     }
 
     fun permission(p: JsonObject): PendingPermission? {
