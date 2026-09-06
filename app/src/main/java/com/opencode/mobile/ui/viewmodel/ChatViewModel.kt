@@ -50,6 +50,22 @@ class ChatViewModel(
         _ui.value = _ui.value.copy(agent = agent)
     }
 
+    fun clearModel() {
+        _ui.value = _ui.value.copy(model = null)
+    }
+
+    /** Single entry point for the composer: slash commands go to /command, else chat. */
+    fun sendSmart(raw: String) {
+        val t = raw.trim()
+        if (t.isEmpty()) return
+        if (t.startsWith("/")) {
+            val parts = t.removePrefix("/").split(" ", limit = 2)
+            runSlashCommand(parts[0], parts.getOrElse(1) { "" })
+        } else {
+            send(t)
+        }
+    }
+
     fun send(text: String) {
         if (text.isBlank() || _ui.value.sending) return
         viewModelScope.launch {

@@ -2,6 +2,7 @@ package com.opencode.mobile.ui.navigation
 
 object Routes {
     const val CONNECTION = "connection"
+    const val HOME = "home"
     const val DASHBOARD = "dashboard"
     const val SESSIONS = "sessions"
     const val CHAT = "chat/{sessionId}"

@@ -1,42 +1,43 @@
 package com.opencode.mobile.ui.components
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.opencode.mobile.data.SessionMessageDto
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 
-private fun partType(p: kotlinx.serialization.json.JsonObject): String =
+private fun partType(p: JsonObject): String =
     p["type"]?.jsonPrimitive?.content ?: "unknown"
 
-private fun partText(p: kotlinx.serialization.json.JsonObject): String {
-    val t = p["text"]?.jsonPrimitive?.content
-    if (t != null) return t
-    val out = p["output"]?.jsonPrimitive?.content
-    if (out != null) return out
-    val err = p["error"]?.jsonPrimitive?.content
-    if (err != null) return "Error: $err"
-    val title = p["title"]?.jsonPrimitive?.content
-    val tool = p["tool"]?.jsonPrimitive?.content
-    if (title != null || tool != null) return listOfNotNull(tool, title).joinToString(" — ")
-    return p.toString().take(600)
-}
+private fun partText(p: JsonObject): String =
+    p["text"]?.jsonPrimitive?.content
+        ?: p["output"]?.jsonPrimitive?.content
+        ?: p["error"]?.jsonPrimitive?.content
+        ?: ""
 
+/**
+ * Typical coding-agent message rendering: user bubble on the right,
+ * assistant as plain full-width text, tool activity as one-line rows.
+ * Internal part kinds (steps, snapshots, retries, compaction) stay hidden.
+ */
 @Composable
 fun MessageBubble(
     message: SessionMessageDto,
@@ -44,128 +45,125 @@ fun MessageBubble(
     onFork: (() -> Unit)? = null
 ) {
     val role = message.info["role"]?.jsonPrimitive?.content ?: "unknown"
-    val isUser = role == "user"
-    val container = if (isUser) MaterialTheme.colorScheme.primaryContainer
-    else MaterialTheme.colorScheme.surfaceVariant
-
-    Card(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = container)
-    ) {
-        Column(Modifier.padding(14.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+    if (role == "user") {
+        Box(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            contentAlignment = Alignment.CenterEnd
+        ) {
+            Surface(
+                color = MaterialTheme.colorScheme.primaryContainer,
+                shape = RoundedCornerShape(18.dp)
             ) {
                 Text(
-                    text = if (isUser) "You" else "Opencode",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                val cost = message.info["cost"]?.jsonPrimitive?.content
-                if (cost != null && !isUser) {
-                    Text(
-                        text = "cost $cost",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-            if (message.parts.isEmpty()) {
-                Text(
-                    "(empty message)",
+                    text = message.parts.filter { partType(it) == "text" }
+                        .joinToString("\n\n") { partText(it) }.ifBlank { "(empty)" },
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
                 )
             }
-            message.parts.forEach { part ->
-                when (partType(part)) {
-                    "text" -> Text(
-                        text = partText(part),
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
-                    "reasoning" -> Text(
-                        text = "Reasoning: " + partText(part).take(800),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
-                    "tool" -> {
-                        val tool = part["tool"]?.jsonPrimitive?.content ?: "tool"
-                        val state = part["state"]?.toString()?.take(120) ?: ""
-                        Card(
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surface
-                            ),
-                            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
-                        ) {
-                            Column(Modifier.padding(10.dp)) {
-                                Text(
-                                    "Tool: $tool",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    fontWeight = FontWeight.SemiBold,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                                Text(
-                                    partText(part).take(900),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                                if (state.isNotBlank()) {
-                                    Text(
-                                        state,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    "file" -> Text(
-                        "Attachment: " + (part["filename"]?.jsonPrimitive?.content
-                            ?: part["url"]?.jsonPrimitive?.content
-                            ?: "file"),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.secondary,
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
-                    "patch" -> Text(
-                        "Patch: " + (part["files"]?.toString()?.take(400) ?: ""),
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace,
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
-                    "agent" -> Text(
-                        "Agent: " + (part["name"]?.jsonPrimitive?.content ?: ""),
+        }
+        return
+    }
+
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        val texts = message.parts.filter { partType(it) == "text" }.map { partText(it) }
+            .filter { it.isNotBlank() }
+        if (texts.isNotEmpty()) {
+            Text(
+                text = texts.joinToString("\n\n"),
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+        message.parts.filter { partType(it) == "reasoning" }.forEach { part ->
+            val t = partText(part).take(400)
+            if (t.isNotBlank()) {
+                Text(
+                    text = t,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontStyle = FontStyle.Italic,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
+        }
+        message.parts.filter { partType(it) == "tool" }.forEach { part ->
+            val tool = part["tool"]?.jsonPrimitive?.content ?: "tool"
+            val out = partText(part).take(220)
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+            ) {
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                    Text(
+                        text = "Used $tool",
                         style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.tertiary,
-                        modifier = Modifier.padding(bottom = 8.dp)
+                        fontWeight = FontWeight.SemiBold
                     )
-                    "retry", "compaction", "step-start", "step-finish", "snapshot", "subtask" ->
+                    if (out.isNotBlank()) {
                         Text(
-                            partType(part) + ": " + partText(part).take(400),
-                            style = MaterialTheme.typography.labelSmall,
+                            text = out,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(bottom = 6.dp)
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
                         )
-                    else -> Text(
-                        partType(part) + ": " + partText(part).take(400),
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(bottom = 6.dp)
-                    )
+                    }
                 }
             }
-            if (onRevert != null || onFork != null) {
-                Row {
-                    onRevert?.let {
-                        TextButton(onClick = it) { Text("Revert") }
+        }
+        message.parts.filter { partType(it) == "file" }.forEach { part ->
+            val name = part["filename"]?.jsonPrimitive?.content
+                ?: part["url"]?.jsonPrimitive?.content ?: "file"
+            Text(
+                text = "Attached $name",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.secondary,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+        }
+        message.parts.filter { partType(it) == "patch" }.forEach { part ->
+            val files = part["files"]?.jsonArray
+            val label = if (files != null) "${files.size} file(s)" else "files"
+            Text(
+                text = "Updated $label",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.secondary,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+        }
+        message.info["error"]?.let { err ->
+            Text(
+                text = err.toString().take(300),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+        }
+        if (texts.isEmpty() && message.parts.none {
+                partType(it) in setOf("tool", "file", "patch", "reasoning")
+            } && message.info["error"] == null
+        ) {
+            Text(
+                text = "Working…",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (onRevert != null || onFork != null) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier.padding(top = 2.dp)
+            ) {
+                onRevert?.let {
+                    TextButton(onClick = it) {
+                        Text("Undo", style = MaterialTheme.typography.labelSmall)
                     }
-                    onFork?.let {
-                        TextButton(onClick = it) { Text("Fork here") }
+                }
+                onFork?.let {
+                    TextButton(onClick = it) {
+                        Text("Branch off here", style = MaterialTheme.typography.labelSmall)
                     }
                 }
             }
