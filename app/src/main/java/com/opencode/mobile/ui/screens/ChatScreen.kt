@@ -19,10 +19,12 @@ import kotlinx.serialization.json.jsonPrimitive
 fun ChatThread(
     messages: List<SessionMessageDto>,
     onRevert: (String) -> Unit,
-    onFork: (String) -> Unit
+    onFork: (String) -> Unit,
+    streaming: Boolean = false
 ) {
     val listState = rememberLazyListState()
-    LaunchedEffect(messages.size) {
+    // Follow the stream: stick to the bottom on any content change while live.
+    LaunchedEffect(messages.size, messages.lastOrNull()?.parts?.size, streaming) {
         if (messages.isNotEmpty()) listState.scrollToItem(messages.size - 1)
     }
     LazyColumn(
@@ -36,10 +38,14 @@ fun ChatThread(
             key = { m -> m.info["id"]?.jsonPrimitive?.content ?: m.hashCode().toString() }
         ) { m ->
             val msgId = m.info["id"]?.jsonPrimitive?.content ?: ""
+            val isLastAssistant = streaming &&
+                m == messages.lastOrNull() &&
+                (m.info["role"]?.jsonPrimitive?.content != "user")
             MessageBubble(
                 message = m,
                 onRevert = { onRevert(msgId) },
-                onFork = { onFork(msgId) }
+                onFork = { onFork(msgId) },
+                isLive = isLastAssistant
             )
         }
     }

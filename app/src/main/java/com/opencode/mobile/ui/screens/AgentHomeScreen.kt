@@ -16,6 +16,8 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -47,13 +49,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.opencode.mobile.OpencodeApp
 import com.opencode.mobile.data.OpencodeRepository
+import com.opencode.mobile.data.SseState
 import com.opencode.mobile.ui.viewmodel.ChatUiState
 import com.opencode.mobile.ui.viewmodel.ChatViewModel
 import com.opencode.mobile.ui.viewmodel.SessionsViewModel
@@ -81,9 +86,15 @@ fun AgentHomeScreen(
     val drawer = rememberDrawerState(androidx.compose.material3.DrawerValue.Closed)
     val snacks = remember { SnackbarHostState() }
     val clipboard = LocalClipboardManager.current
+    val app = LocalContext.current.applicationContext as OpencodeApp
+
+    // Live event stream for this server (auto-reconnects). Drives streaming
+    // replies, tool states, statuses, todos and permission prompts.
+    LaunchedEffect(repo.settings.baseUrl) { app.ensureSse() }
+    val sseState by app.sse.state.collectAsState()
 
     val sessionsVm: SessionsViewModel =
-        viewModel(factory = singleFactory { SessionsViewModel(repo) })
+        viewModel(factory = singleFactory { SessionsViewModel(repo, app.sse.events) })
     val sessionsUi by sessionsVm.ui.collectAsState()
     LaunchedEffect(Unit) { sessionsVm.refresh() }
 
@@ -95,7 +106,7 @@ fun AgentHomeScreen(
     val sheetState = rememberModalBottomSheetState()
 
     val chatVm: ChatViewModel? = selectedId?.let { id ->
-        viewModel(key = "chat-$id", factory = singleFactory { ChatViewModel(repo, id) })
+        viewModel(key = "chat-$id", factory = singleFactory { ChatViewModel(repo, id, app.sse.events) })
     }
     val chatUi: ChatUiState by if (chatVm != null) chatVm.ui.collectAsState()
     else remember { mutableStateOf(ChatUiState()) }
@@ -109,7 +120,7 @@ fun AgentHomeScreen(
         if (first != null) chatVm?.sendSmart(first) else chatVm?.refresh()
     }
 
-    val busy = chatUi.sending ||
+    val busy = chatUi.sending || chatUi.liveBusy ||
         (selectedId?.let { sessionsUi.statuses[it]?.type } == "busy")
     val title = selectedId?.let { id ->
         sessionsUi.sessions.firstOrNull { it.id == id }?.title?.ifBlank { null }
@@ -167,7 +178,18 @@ fun AgentHomeScreen(
                                 Icon(Icons.Filled.Menu, contentDescription = "Chat history")
                             }
                         },
-                        title = { Text(title, maxLines = 1) },
+                        title = {
+                            Column {
+                                Text(title, maxLines = 1)
+                                if (sseState != SseState.LIVE) {
+                                    Text(
+                                        "Reconnecting…",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        },
                         actions = {
                             IconButton(onClick = { selectedId = null }) {
                                 Icon(Icons.Filled.Add, contentDescription = "New chat")
@@ -210,6 +232,15 @@ fun AgentHomeScreen(
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
+                        )
+                    }
+                    chatUi.pendingPermissions.firstOrNull()?.let { perm ->
+                        PermissionCard(
+                            title = perm.title,
+                            kind = perm.kind,
+                            onAllow = { chatVm?.respondPermission(perm.id, "once") },
+                            onAlways = { chatVm?.respondPermission(perm.id, "always") },
+                            onDeny = { chatVm?.respondPermission(perm.id, "reject") }
                         )
                     }
                     Row(
@@ -267,6 +298,7 @@ fun AgentHomeScreen(
                 } else {
                     ChatThread(
                         messages = chatUi.messages,
+                        streaming = busy,
                         onRevert = { msgId -> chatVm?.revert(msgId) },
                         onFork = { msgId ->
                             chatVm?.fork(msgId.ifBlank { null }) { newId ->
@@ -297,6 +329,35 @@ fun AgentHomeScreen(
                 sheetOpen = false
             }
         )
+    }
+}
+
+@Composable
+private fun PermissionCard(
+    title: String,
+    kind: String,
+    onAllow: () -> Unit,
+    onAlways: () -> Unit,
+    onDeny: () -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Needs your approval", fontWeight = FontWeight.Bold)
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                kind,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onAllow) { Text("Allow") }
+                TextButton(onClick = onAlways) { Text("Always") }
+                TextButton(onClick = onDeny) { Text("Deny") }
+            }
+        }
     }
 }
 

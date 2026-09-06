@@ -1,41 +1,69 @@
 package com.opencode.mobile.data
 
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.sse.EventSource
 import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.resume
 
-// Subscribes to GET /event (and /global/event). First event is
-// `server.connected`, then bus events: message.updated,
-// message.part.updated (with `delta` for streaming), session.status/idle,
-// permission.updated, todo.updated, file.edited, session.created/updated/
-// deleted/diff/error, tui.*, pty.*, etc.
+enum class SseState { IDLE, CONNECTING, LIVE, RETRYING }
+
+// App-wide subscription to GET /event (first event is `server.connected`,
+// then bus events: message.updated, message.part.updated with `delta`,
+// session.status/idle, permission.updated/replied, todo.updated, ...).
+// Auto-reconnects with backoff so the thread stays live.
 class SseManager {
-    private var eventSource: EventSource? = null
     private var job: Job? = null
 
-    private val _events = MutableSharedFlow<ServerEvent>(extraBufferCapacity = 256)
+    private val _events = MutableSharedFlow<ServerEvent>(extraBufferCapacity = 512)
     val events: SharedFlow<ServerEvent> = _events
+
+    private val _state = MutableStateFlow(SseState.IDLE)
+    val state: StateFlow<SseState> = _state
 
     data class ServerEvent(val type: String, val raw: String)
 
     fun connect(scope: CoroutineScope, baseUrl: String, client: OkHttpClient, path: String = "event") {
         disconnect()
-        job = scope.launch(Dispatchers.IO) {
-            val url = baseUrl.trimEnd('/') + "/" + path.trimStart('/')
+        val url = baseUrl.trimEnd('/') + "/" + path.trimStart('/')
+        job = scope.launch {
+            var delayMs = 1000L
+            while (isActive) {
+                _state.value = if (delayMs > 1000L) SseState.RETRYING else SseState.CONNECTING
+                val opened = listenOnce(url, client)
+                if (!isActive) break
+                delayMs = if (opened) 1000L else minOf(delayMs * 2, 15000L)
+                if (!opened) _events.tryEmit(ServerEvent("sse.error", "reconnecting"))
+                delay(delayMs)
+            }
+            _state.value = SseState.IDLE
+        }
+    }
+
+    /** Suspends until the stream drops. Returns true if it ever opened. */
+    private suspend fun listenOnce(url: String, client: OkHttpClient): Boolean =
+        suspendCancellableCoroutine { cont ->
+            val opened = AtomicBoolean(false)
             val request = Request.Builder().url(url).build()
             val factory = EventSources.createFactory(client)
-            factory.newEventSource(request, object : EventSourceListener() {
+            val source = factory.newEventSource(request, object : EventSourceListener() {
                 override fun onOpen(eventSource: EventSource, response: Response) {
-                    scope.launch { _events.emit(ServerEvent("sse.open", "")) }
+                    opened.set(true)
+                    _state.value = SseState.LIVE
+                    _events.tryEmit(ServerEvent("sse.open", ""))
                 }
 
                 override fun onEvent(
@@ -44,10 +72,8 @@ class SseManager {
                     type: String?,
                     data: String
                 ) {
-                    scope.launch {
-                        val t = type?.ifBlank { "message" } ?: "message"
-                        _events.emit(ServerEvent(t, data))
-                    }
+                    val t = type?.ifBlank { null } ?: Realtime.typeOf(data) ?: "message"
+                    _events.tryEmit(ServerEvent(t, data))
                 }
 
                 override fun onFailure(
@@ -55,25 +81,26 @@ class SseManager {
                     t: Throwable?,
                     response: Response?
                 ) {
-                    scope.launch {
-                        _events.emit(ServerEvent("sse.error", t?.message ?: "connection failed"))
-                    }
+                    _events.tryEmit(ServerEvent("sse.error", t?.message ?: "stream failed"))
+                    if (cont.isActive) cont.resume(opened.get())
                 }
 
                 override fun onClosed(eventSource: EventSource) {
-                    scope.launch { _events.emit(ServerEvent("sse.closed", "")) }
+                    _events.tryEmit(ServerEvent("sse.closed", ""))
+                    if (cont.isActive) cont.resume(opened.get())
                 }
-            }).also { eventSource = it }
+            })
+            cont.invokeOnCancellation {
+                try {
+                    source.cancel()
+                } catch (_: Exception) {
+                }
+            }
         }
-    }
 
     fun disconnect() {
         job?.cancel()
         job = null
-        try {
-            eventSource?.cancel()
-        } catch (_: Exception) {
-        }
-        eventSource = null
+        _state.value = SseState.IDLE
     }
 }

@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -22,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import com.opencode.mobile.data.SessionMessageDto
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 private fun partType(p: JsonObject): String =
@@ -33,6 +35,39 @@ private fun partText(p: JsonObject): String =
         ?: p["error"]?.jsonPrimitive?.content
         ?: ""
 
+private data class ToolView(
+    val name: String,
+    val status: String,
+    val title: String,
+    val detail: String,
+    val isError: Boolean
+)
+
+/** Reads the real ToolPart shape: { tool, state: { status, title?, input?, output?, error? } }. */
+private fun toolViewOf(part: JsonObject): ToolView {
+    val name = part["tool"]?.jsonPrimitive?.content ?: "tool"
+    val state = part["state"] as? JsonObject
+    val status = state?.get("status")?.jsonPrimitive?.content
+        ?: part["status"]?.jsonPrimitive?.content ?: "completed"
+    val title = state?.get("title")?.jsonPrimitive?.content
+        ?: part["title"]?.jsonPrimitive?.content ?: ""
+    val output = state?.get("output")?.jsonPrimitive?.content
+        ?: state?.get("error")?.jsonPrimitive?.content
+        ?: partText(part)
+    val inputHint = (state?.get("input") as? JsonObject)
+        ?.entries?.firstOrNull()?.let { (_, v) ->
+            v.jsonPrimitive.content.take(140)
+        } ?: ""
+    val detail = (output.ifBlank { inputHint }).take(400)
+    return ToolView(
+        name = name,
+        status = status,
+        title = title.ifBlank { name },
+        detail = detail,
+        isError = status == "error"
+    )
+}
+
 /**
  * Typical coding-agent message rendering: user bubble on the right,
  * assistant as plain full-width text, tool activity as one-line rows.
@@ -42,7 +77,8 @@ private fun partText(p: JsonObject): String =
 fun MessageBubble(
     message: SessionMessageDto,
     onRevert: (() -> Unit)? = null,
-    onFork: (() -> Unit)? = null
+    onFork: (() -> Unit)? = null,
+    isLive: Boolean = false
 ) {
     val role = message.info["role"]?.jsonPrimitive?.content ?: "unknown"
     if (role == "user") {
@@ -70,7 +106,7 @@ fun MessageBubble(
             .filter { it.isNotBlank() }
         if (texts.isNotEmpty()) {
             Text(
-                text = texts.joinToString("\n\n"),
+                text = texts.joinToString("\n\n") + if (isLive) " ▍" else "",
                 style = MaterialTheme.typography.bodyMedium
             )
         }
@@ -87,27 +123,42 @@ fun MessageBubble(
             }
         }
         message.parts.filter { partType(it) == "tool" }.forEach { part ->
-            val tool = part["tool"]?.jsonPrimitive?.content ?: "tool"
-            val out = partText(part).take(220)
+            val tool = toolViewOf(part)
             Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant,
+                color = if (tool.isError) MaterialTheme.colorScheme.errorContainer
+                else MaterialTheme.colorScheme.surfaceVariant,
                 shape = RoundedCornerShape(12.dp),
                 modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
             ) {
                 Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                    val headline = when (tool.status) {
+                        "pending" -> "Queued ${tool.title}"
+                        "running" -> "${tool.title} — running…"
+                        "error" -> "${tool.title} — failed"
+                        else -> tool.title
+                    }
                     Text(
-                        text = "Used $tool",
+                        text = headline,
                         style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.SemiBold
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (tool.isError) MaterialTheme.colorScheme.onErrorContainer
+                        else MaterialTheme.colorScheme.onSurface
                     )
-                    if (out.isNotBlank()) {
+                    if (tool.status == "running" || tool.status == "pending") {
+                        LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+                        )
+                    }
+                    if (tool.detail.isNotBlank()) {
                         Text(
-                            text = out,
+                            text = tool.detail,
                             style = MaterialTheme.typography.bodySmall,
                             fontFamily = FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 3,
-                            overflow = TextOverflow.Ellipsis
+                            color = if (tool.isError) MaterialTheme.colorScheme.onErrorContainer
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = if (tool.isError) 6 else 3,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 2.dp)
                         )
                     }
                 }
