@@ -2,8 +2,10 @@ package com.opencode.mobile.ui
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.hardware.SensorManager
+import android.net.Uri
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -73,11 +75,23 @@ import kotlinx.coroutines.launch
 private const val DESKTOP_UA =
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-// Forces the loaded page to be non-zoomable so the app feels native.
+// Disables pinch zoom while preserving the site's own viewport params
+// (width, theme, viewport-fit, ...) so the layout keeps rendering as designed.
 private const val NO_ZOOM_JS =
     "(function(){var m=document.querySelector('meta[name=viewport]');" +
-        "if(!m){m=document.createElement('meta');m.name='viewport';document.head.appendChild(m);}" +
-        "m.content='width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';})();"
+        "if(!m){m=document.createElement('meta');m.setAttribute('name','viewport');document.head.appendChild(m);}" +
+        "var raw=m.getAttribute('content')||'';var keep=[];" +
+        "raw.split(',').forEach(function(p){var q=p.trim();var l=q.toLowerCase();" +
+        "if(!q)return;" +
+        "if(l.indexOf('maximum-scale')===0||l.indexOf('user-scalable')===0)return;" +
+        "keep.push(q);});" +
+        "function has(prefix){for(var i=0;i<keep.length;i++)" +
+        "{if(keep[i].toLowerCase().indexOf(prefix)===0)return true;}return false;}" +
+        "if(!has('width'))keep.push('width=device-width');" +
+        "if(!has('initial-scale'))keep.push('initial-scale=1.0');" +
+        "if(!has('viewport-fit'))keep.push('viewport-fit=cover');" +
+        "keep.push('maximum-scale=1.0');keep.push('user-scalable=no');" +
+        "m.setAttribute('content',keep.join(', '));})();"
 
 @SuppressLint("SetJavaScriptEnabled")
 private fun buildWebView(
@@ -720,6 +734,23 @@ fun WebViewScreen(prefs: WebPrefs) {
                         modifier = Modifier.weight(1f)
                     ) { Text("Forward") }
                 }
+                TextButton(
+                    onClick = {
+                        val link = webView.url
+                            ?: saved.serverUrl.trim().trimEnd('/').ifBlank { null }
+                        if (link != null) {
+                            try {
+                                context.startActivity(
+                                    Intent(Intent.ACTION_VIEW, Uri.parse(link)).apply {
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    }
+                                )
+                            } catch (_: Exception) {
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Open in external browser (compare rendering)") }
             }
         }
     }
