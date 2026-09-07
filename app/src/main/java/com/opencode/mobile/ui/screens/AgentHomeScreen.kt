@@ -2,8 +2,7 @@ package com.opencode.mobile.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -25,12 +24,10 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -42,7 +39,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberDrawerState
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -88,7 +84,8 @@ private fun <T : ViewModel> singleFactory(create: () -> T) =
 fun AgentHomeScreen(
     repo: OpencodeRepository,
     initialSessionId: String?,
-    onDisconnect: () -> Unit
+    onDisconnect: () -> Unit,
+    onOpenFiles: () -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
     val drawer = rememberDrawerState(androidx.compose.material3.DrawerValue.Closed)
@@ -110,8 +107,11 @@ fun AgentHomeScreen(
     var pending by remember { mutableStateOf<String?>(null) }
     var input by remember { mutableStateOf("") }
     var menuOpen by remember { mutableStateOf(false) }
-    var sheetOpen by remember { mutableStateOf(false) }
-    val sheetState = rememberModalBottomSheetState()
+    var showModels by remember { mutableStateOf(false) }
+    var showCommands by remember { mutableStateOf(false) }
+    var showDiffs by remember { mutableStateOf(false) }
+    var showTodos by remember { mutableStateOf(false) }
+    var permIndex by remember { mutableStateOf(0) }
 
     val chatVm: ChatViewModel? = selectedId?.let { id ->
         viewModel(key = "chat-$id", factory = singleFactory { ChatViewModel(repo, id, app.sse.events) })
@@ -143,6 +143,16 @@ fun AgentHomeScreen(
             clipboard.setText(AnnotatedString(url))
             scope.launch { snacks.showSnackbar("Share link copied") }
         }
+    }
+    LaunchedEffect(chatUi.notice) {
+        chatUi.notice?.let { msg ->
+            scope.launch { snacks.showSnackbar(msg) }
+            chatVm?.consumeNotice()
+        }
+    }
+    // Keep the permission pager valid as the queue changes.
+    LaunchedEffect(chatUi.pendingPermissions.size) {
+        if (permIndex >= chatUi.pendingPermissions.size) permIndex = 0
     }
 
     fun submit() {
@@ -211,10 +221,50 @@ fun AgentHomeScreen(
                             }
                             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                                 DropdownMenuItem(
-                                    text = { Text("Share chat") },
+                                    text = { Text("View changes") },
                                     enabled = selectedId != null,
-                                    onClick = { menuOpen = false; chatVm?.share() }
+                                    onClick = {
+                                        menuOpen = false
+                                        chatVm?.loadDiffs()
+                                        showDiffs = true
+                                    }
                                 )
+                                DropdownMenuItem(
+                                    text = { Text("Project files") },
+                                    onClick = { menuOpen = false; onOpenFiles() }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Run command…") },
+                                    enabled = selectedId != null,
+                                    onClick = {
+                                        menuOpen = false
+                                        chatVm?.loadExtras()
+                                        showCommands = true
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Summarize chat") },
+                                    enabled = selectedId != null && !busy,
+                                    onClick = { menuOpen = false; chatVm?.summarize() }
+                                )
+                                if (chatUi.shared) {
+                                    DropdownMenuItem(
+                                        text = { Text("Copy share link") },
+                                        enabled = selectedId != null,
+                                        onClick = { menuOpen = false; chatVm?.share() }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Remove share link") },
+                                        enabled = selectedId != null,
+                                        onClick = { menuOpen = false; chatVm?.unshare() }
+                                    )
+                                } else {
+                                    DropdownMenuItem(
+                                        text = { Text("Share chat") },
+                                        enabled = selectedId != null,
+                                        onClick = { menuOpen = false; chatVm?.share() }
+                                    )
+                                }
                                 DropdownMenuItem(
                                     text = { Text("Refresh") },
                                     enabled = selectedId != null,
@@ -241,33 +291,45 @@ fun AgentHomeScreen(
                         val done = chatUi.todos.count { it.status == "completed" }
                         val active = chatUi.todos.firstOrNull { it.status == "in_progress" }
                             ?: chatUi.todos.firstOrNull { it.status != "completed" }
-                        Text(
-                            "$done of ${chatUi.todos.size} tasks done",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(start = 4.dp)
-                        )
-                        active?.let {
+                        Column(
+                            Modifier.fillMaxWidth()
+                                .clickable { showTodos = true }
+                                .padding(start = 4.dp, bottom = 4.dp)
+                        ) {
                             Text(
-                                "• " + it.content.take(90),
+                                "$done of ${chatUi.todos.size} tasks done — tap to view",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                            active?.let {
+                                Text(
+                                    "• " + it.content.take(90),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
-                    chatUi.pendingPermissions.firstOrNull()?.let { perm ->
+                    val perms = chatUi.pendingPermissions
+                    perms.getOrNull(permIndex.coerceAtMost((perms.size - 1).coerceAtLeast(0)))?.let { perm ->
                         PermissionCard(
                             title = perm.title,
                             kind = perm.kind,
                             patterns = perm.patterns,
+                            position = if (perms.size > 1) "${permIndex + 1} of ${perms.size}" else null,
+                            onPrev = if (perms.size > 1) {
+                                { permIndex = (permIndex - 1 + perms.size) % perms.size }
+                            } else null,
+                            onNext = if (perms.size > 1) {
+                                { permIndex = (permIndex + 1) % perms.size }
+                            } else null,
                             onAllow = { chatVm?.respondPermission(perm.id, "once") },
                             onAlways = { chatVm?.respondPermission(perm.id, "always") },
                             onDeny = { chatVm?.respondPermission(perm.id, "reject") }
                         )
                     }
                     chatUi.pendingQuestions.firstOrNull()?.let { q ->
-                        QuestionCard(
+                        QuestionDock(
                             request = q,
                             onSubmit = { answers -> chatVm?.replyQuestion(q.id, answers) },
                             onSkip = { chatVm?.rejectQuestion(q.id) }
@@ -279,7 +341,10 @@ fun AgentHomeScreen(
                         busy = busy,
                         modelLabel = chatUi.model?.let { "${it.providerID}/${it.modelID}" }
                             ?: "Assistant: ${chatUi.agent}",
-                        onModelClick = { sheetOpen = true },
+                        onModelClick = {
+                            chatVm?.loadExtras()
+                            showModels = true
+                        },
                         onSend = { submit() },
                         onStop = { chatVm?.abort() }
                     )
@@ -322,22 +387,41 @@ fun AgentHomeScreen(
         }
     }
 
-    if (sheetOpen && chatVm != null) {
-        AssistantSheet(
-            agent = chatUi.agent,
-            modelText = chatUi.model?.let { "${it.providerID}/${it.modelID}" } ?: "",
-            onDismiss = { sheetOpen = false },
-            onSave = { agent, modelText ->
-                chatVm.pickAgent(agent)
-                val m = modelText.trim()
-                if (m.isEmpty() || !m.contains("/")) chatVm.clearModel()
-                else {
-                    val (prov, mid) = m.split("/", limit = 2)
-                    if (prov.isNotBlank() && mid.isNotBlank()) chatVm.pickModel(prov.trim(), mid.trim())
-                    else chatVm.clearModel()
-                }
-                sheetOpen = false
-            }
+    if (showModels && chatVm != null) {
+        ModelPickerSheet(
+            agents = chatUi.agents,
+            providers = chatUi.providers,
+            currentAgent = chatUi.agent,
+            currentModel = chatUi.model,
+            loading = chatUi.extrasLoading,
+            onPickAgent = { chatVm.pickAgent(it) },
+            onPickModel = { prov, mid -> chatVm.pickModel(prov, mid) },
+            onUseDefault = { chatVm.clearModel() },
+            onDismiss = { showModels = false }
+        )
+    }
+    if (showCommands && chatVm != null) {
+        CommandSheet(
+            commands = chatUi.commands,
+            loading = chatUi.extrasLoading,
+            onRun = { cmd, args ->
+                showCommands = false
+                chatVm.runSlashCommand(cmd, args)
+            },
+            onDismiss = { showCommands = false }
+        )
+    }
+    if (showDiffs && chatVm != null) {
+        DiffsDialog(
+            diffs = chatUi.diffs,
+            loading = chatUi.diffsLoading,
+            onDismiss = { showDiffs = false }
+        )
+    }
+    if (showTodos) {
+        TodosSheet(
+            todos = chatUi.todos,
+            onDismiss = { showTodos = false }
         )
     }
 }
@@ -347,6 +431,9 @@ private fun PermissionCard(
     title: String,
     kind: String,
     patterns: List<String>,
+    position: String? = null,
+    onPrev: (() -> Unit)? = null,
+    onNext: (() -> Unit)? = null,
     onAllow: () -> Unit,
     onAlways: () -> Unit,
     onDeny: () -> Unit
@@ -356,7 +443,22 @@ private fun PermissionCard(
         modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Needs your approval", fontWeight = FontWeight.Bold)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Needs your approval",
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
+                )
+                if (position != null && onPrev != null && onNext != null) {
+                    TextButton(onClick = onPrev) { Text("‹") }
+                    Text(
+                        position,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    TextButton(onClick = onNext) { Text("›") }
+                }
+            }
             Text(title, style = MaterialTheme.typography.bodyMedium)
             val sub = (listOf(kind) + patterns).filter { it.isNotBlank() }.joinToString(" · ")
             if (sub.isNotBlank()) {
@@ -376,23 +478,58 @@ private fun PermissionCard(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun QuestionCard(
+private fun QuestionDock(
     request: PendingQuestion,
     onSubmit: (List<List<String>>) -> Unit,
     onSkip: () -> Unit
 ) {
+    var minimized by remember(request.id) { mutableStateOf(false) }
+    var tab by remember(request.id) { mutableStateOf(0) }
     val picked = remember(request.id) { mutableStateMapOf<Int, MutableSet<String>>() }
     val customs = remember(request.id) { mutableStateMapOf<Int, String>() }
+    val total = request.questions.size.coerceAtLeast(1)
+    val safeTab = tab.coerceIn(0, total - 1)
+
+    fun isAnswered(qi: Int): Boolean =
+        picked[qi].orEmpty().isNotEmpty() || customs[qi].orEmpty().isNotBlank()
+
+    fun answers(): List<List<String>> =
+        request.questions.mapIndexed { qi, _ ->
+            val set = picked[qi].orEmpty().toMutableList()
+            customs[qi]?.trim()?.takeIf { it.isNotEmpty() }?.let { set += it }
+            set.toList()
+        }
+
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
         modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Question", fontWeight = FontWeight.Bold)
-            request.questions.forEachIndexed { qi, q ->
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    if (total > 1) "Question ${safeTab + 1} of $total" else "Question",
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
+                )
+                if (minimized) {
+                    TextButton(onClick = { minimized = false }) { Text("Expand") }
+                } else if (total > 1) {
+                    TextButton(onClick = { minimized = true }) { Text("Hide") }
+                }
+                TextButton(onClick = onSkip) { Text("Skip") }
+            }
+            if (!minimized) {
+                if (total > 1) {
+                    LinearProgressIndicator(
+                        progress = { (safeTab + 1) / total.toFloat() },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                val q = request.questions.getOrNull(safeTab)
+                if (q == null) {
+                    Text("…", style = MaterialTheme.typography.bodyMedium)
+                } else {
                     if (q.header.isNotBlank()) {
                         Text(
                             q.header,
@@ -403,44 +540,93 @@ private fun QuestionCard(
                     if (q.question.isNotBlank()) {
                         Text(q.question, style = MaterialTheme.typography.bodyMedium)
                     }
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (q.multiple) {
+                        Text(
+                            "Pick any that apply",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         q.options.forEach { opt ->
-                            val set = picked.getOrPut(qi) { mutableSetOf() }
-                            FilterChip(
-                                selected = opt.label in set,
-                                onClick = {
-                                    if (q.multiple) {
-                                        if (!set.add(opt.label)) set.remove(opt.label)
-                                    } else {
-                                        set.clear()
-                                        set.add(opt.label)
+                            val set = picked.getOrPut(safeTab) { mutableSetOf() }
+                            val selected = opt.label in set
+                            Row(
+                                verticalAlignment = Alignment.Top,
+                                modifier = Modifier.fillMaxWidth()
+                                    .clickable {
+                                        if (q.multiple) {
+                                            if (!set.add(opt.label)) set.remove(opt.label)
+                                        } else {
+                                            set.clear()
+                                            set.add(opt.label)
+                                        }
                                     }
-                                },
-                                label = { Text(opt.label) }
-                            )
+                                    .padding(vertical = 2.dp)
+                            ) {
+                                Text(
+                                    if (q.multiple) {
+                                        if (selected) "☑" else "☐"
+                                    } else {
+                                        if (selected) "◉" else "○"
+                                    },
+                                    color = if (selected) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(end = 8.dp, top = 1.dp)
+                                )
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        opt.label,
+                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                        color = if (selected) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onSurface
+                                    )
+                                    if (opt.description.isNotBlank()) {
+                                        Text(
+                                            opt.description,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                     if (q.custom) {
                         OutlinedTextField(
-                            value = customs[qi] ?: "",
-                            onValueChange = { customs[qi] = it },
+                            value = customs[safeTab] ?: "",
+                            onValueChange = { customs[safeTab] = it },
                             label = { Text("Or type your own answer") },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true
                         )
                     }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (safeTab > 0) {
+                            TextButton(onClick = { tab = safeTab - 1 }) { Text("Back") }
+                        }
+                        Spacer(Modifier.weight(1f))
+                        if (safeTab < total - 1) {
+                            Button(onClick = { tab = safeTab + 1 }) { Text("Next") }
+                        } else {
+                            val allAnswered = (0 until total).all { isAnswered(it) }
+                            Button(
+                                onClick = { onSubmit(answers()) },
+                                enabled = allAnswered
+                            ) { Text(if (total > 1) "Answer all" else "Answer") }
+                        }
+                    }
+                    if (total > 1 && !(0 until total).all { isAnswered(it) }) {
+                        Text(
+                            "Answer every question to continue (or Skip).",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = onSkip) { Text("Skip") }
-                Spacer(Modifier.weight(1f))
-                Button(onClick = {
-                    onSubmit(request.questions.mapIndexed { qi, _ ->
-                        val set = picked[qi].orEmpty().toMutableList()
-                        customs[qi]?.trim()?.takeIf { it.isNotEmpty() }?.let { set += it }
-                        set.toList()
-                    })
-                }) { Text("Answer") }
             }
         }
     }
@@ -530,61 +716,6 @@ private fun WelcomePane(onSuggestion: (String) -> Unit, modifier: Modifier = Mod
                 label = { Text("Fix a bug") })
             AssistChip(onClick = { onSuggestion("Add a new feature: ") },
                 label = { Text("Add a feature") })
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun AssistantSheet(
-    agent: String,
-    modelText: String,
-    onDismiss: () -> Unit,
-    onSave: (String, String) -> Unit
-) {
-    var picked by remember(agent) { mutableStateOf(agent.ifBlank { "build" }) }
-    var model by remember(modelText) { mutableStateOf(modelText) }
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState()
-    ) {
-        Column(
-            Modifier.fillMaxWidth().padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Text("Assistant", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(
-                    selected = picked == "build",
-                    onClick = { picked = "build" },
-                    label = { Text("Build") }
-                )
-                FilterChip(
-                    selected = picked == "plan",
-                    onClick = { picked = "plan" },
-                    label = { Text("Plan") }
-                )
-            }
-            Text(
-                if (picked == "plan") "Plan suggests changes without making them."
-                else "Build can read, edit and run commands.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            OutlinedTextField(
-                value = model,
-                onValueChange = { model = it },
-                label = { Text("Model (optional)") },
-                placeholder = { Text("e.g. anthropic/claude-sonnet-4-5") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = { onSave(picked, "") }) { Text("Use server default") }
-                    Spacer(Modifier.weight(1f))
-                    Button(onClick = { onSave(picked, model) }) { Text("Done") }
-                }
-            Spacer(Modifier.height(16.dp))
         }
     }
 }

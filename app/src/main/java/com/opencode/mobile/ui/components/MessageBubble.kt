@@ -25,6 +25,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -162,10 +164,18 @@ fun MessageBubble(
             ThinkingRow()
         }
         if (onRevert != null || onFork != null) {
+            val clipboard = LocalClipboardManager.current
+            val rawText = message.parts.filter { partType(it) == "text" }
+                .joinToString("\n\n") { partText(it) }
             Row(
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 modifier = Modifier.padding(top = 2.dp)
             ) {
+                if (rawText.isNotBlank()) {
+                    TextButton(onClick = { clipboard.setText(AnnotatedString(rawText)) }) {
+                        Text("Copy", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
                 onRevert?.let {
                     TextButton(onClick = it) {
                         Text("Undo", style = MaterialTheme.typography.labelSmall)

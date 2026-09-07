@@ -3,10 +3,14 @@ package com.opencode.mobile.ui.viewmodel
 import android.os.SystemClock
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.opencode.mobile.data.Agent
+import com.opencode.mobile.data.FileDiff
 import com.opencode.mobile.data.ModelRef
+import com.opencode.mobile.data.OpencodeCommand
 import com.opencode.mobile.data.OpencodeRepository
 import com.opencode.mobile.data.PendingPermission
 import com.opencode.mobile.data.PendingQuestion
+import com.opencode.mobile.data.Provider
 import com.opencode.mobile.data.Realtime
 import com.opencode.mobile.data.SessionMessageDto
 import com.opencode.mobile.data.SseManager
@@ -34,7 +38,16 @@ data class ChatUiState(
     val model: ModelRef? = null,
     val agent: String = "build",
     val error: String? = null,
-    val shareUrl: String? = null
+    val notice: String? = null,
+    val shareUrl: String? = null,
+    val shared: Boolean = false,
+    // Session extras (loaded on demand for pickers/viewers)
+    val providers: List<Provider> = emptyList(),
+    val agents: List<Agent> = emptyList(),
+    val commands: List<OpencodeCommand> = emptyList(),
+    val extrasLoading: Boolean = false,
+    val diffs: List<FileDiff> = emptyList(),
+    val diffsLoading: Boolean = false
 )
 
 class ChatViewModel(
@@ -193,7 +206,75 @@ class ChatViewModel(
         viewModelScope.launch {
             try {
                 val s = repo.share(sessionId)
-                _ui.value = _ui.value.copy(shareUrl = s.share?.url)
+                _ui.value = _ui.value.copy(shareUrl = s.share?.url, shared = true)
+            } catch (e: Exception) {
+                _ui.value = _ui.value.copy(error = e.message)
+            }
+        }
+    }
+
+    fun unshare() {
+        viewModelScope.launch {
+            try {
+                repo.unshare(sessionId)
+                _ui.value = _ui.value.copy(shared = false, notice = "Share link removed")
+            } catch (e: Exception) {
+                _ui.value = _ui.value.copy(error = e.message)
+            }
+        }
+    }
+
+    fun consumeNotice() {
+        _ui.value = _ui.value.copy(notice = null)
+    }
+
+    private var extrasLoaded = false
+
+    /** Providers, agents and slash commands for the pickers (loaded once). */
+    fun loadExtras() {
+        if (extrasLoaded) return
+        extrasLoaded = true
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(extrasLoading = true)
+            try {
+                val providers = repo.providers()?.all.orEmpty()
+                val agents = repo.agents()
+                val commands = repo.commands()
+                _ui.value = _ui.value.copy(
+                    providers = providers, agents = agents, commands = commands
+                )
+            } catch (_: Exception) {
+            } finally {
+                _ui.value = _ui.value.copy(extrasLoading = false)
+            }
+        }
+    }
+
+    fun loadDiffs() {
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(diffsLoading = true)
+            try {
+                _ui.value = _ui.value.copy(diffs = repo.diff(sessionId))
+            } catch (e: Exception) {
+                _ui.value = _ui.value.copy(error = e.message)
+            } finally {
+                _ui.value = _ui.value.copy(diffsLoading = false)
+            }
+        }
+    }
+
+    /** Summarize with the currently picked model. */
+    fun summarize() {
+        val model = _ui.value.model
+        if (model == null) {
+            _ui.value = _ui.value.copy(notice = "Pick a model first to summarize")
+            return
+        }
+        viewModelScope.launch {
+            try {
+                repo.summarize(sessionId, model.providerID, model.modelID)
+                _ui.value = _ui.value.copy(notice = "Summarizing… watch the thread")
+                refresh()
             } catch (e: Exception) {
                 _ui.value = _ui.value.copy(error = e.message)
             }

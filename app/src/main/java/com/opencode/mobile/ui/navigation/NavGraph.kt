@@ -12,8 +12,10 @@ import androidx.navigation.navArgument
 import com.opencode.mobile.OpencodeApp
 import com.opencode.mobile.ui.screens.AgentHomeScreen
 import com.opencode.mobile.ui.screens.ConnectionScreen
+import com.opencode.mobile.ui.screens.FilesScreen
 import com.opencode.mobile.ui.theme.OpencodeTheme
 import com.opencode.mobile.ui.viewmodel.ConnectionViewModel
+import com.opencode.mobile.ui.viewmodel.FilesViewModel
 
 @Composable
 fun AppNav(app: OpencodeApp) {
@@ -43,8 +45,19 @@ fun AppNav(app: OpencodeApp) {
                         nav.navigate(Routes.CONNECTION) {
                             popUpTo(Routes.HOME) { inclusive = true }
                         }
+                    },
+                    onOpenFiles = { nav.navigate(Routes.FILES) }
+                )
+            }
+            composable(Routes.FILES) {
+                val vm: FilesViewModel = viewModel(
+                    factory = object : ViewModelProvider.Factory {
+                        @Suppress("UNCHECKED_CAST")
+                        override fun <T : ViewModel> create(modelClass: Class<T>): T =
+                            FilesViewModel(repo) as T
                     }
                 )
+                FilesScreen(vm, onBack = { nav.popBackStack() })
             }
             composable(
                 Routes.CHAT,
@@ -58,7 +71,8 @@ fun AppNav(app: OpencodeApp) {
                         nav.navigate(Routes.CONNECTION) {
                             popUpTo(Routes.CHAT) { inclusive = true }
                         }
-                    }
+                    },
+                    onOpenFiles = { nav.navigate(Routes.FILES) }
                 )
             }
         }
