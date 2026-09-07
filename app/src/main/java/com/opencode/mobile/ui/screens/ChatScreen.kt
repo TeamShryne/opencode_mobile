@@ -5,6 +5,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -52,6 +53,7 @@ import kotlinx.serialization.json.jsonPrimitive
  * (tap to rename), smart stick-to-bottom that never yanks the user while
  * reading, plus a jump-to-latest button when scrolled far up.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ChatThread(
     messages: List<SessionMessageDto>,

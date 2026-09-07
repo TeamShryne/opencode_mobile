@@ -13,9 +13,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.foundation.text.ClickableText
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -25,7 +27,28 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.text.LinkAnnotation
+
+private const val UrlTag = "url"
+
+/** A paragraph that can contain clickable links. */
+@Composable
+private fun LinkedText(
+    text: AnnotatedString,
+    style: androidx.compose.ui.text.TextStyle,
+    modifier: Modifier = Modifier
+) {
+    val uriHandler = LocalUriHandler.current
+    ClickableText(
+        text = text,
+        style = style,
+        modifier = modifier,
+        onClick = { offset ->
+            text.getStringAnnotations(UrlTag, offset, offset).firstOrNull()?.let {
+                runCatching { uriHandler.openUri(it.item) }
+            }
+        }
+    )
+}
 
 /**
  * Markdown-lite rendering like the web client: fenced code blocks become
@@ -135,7 +158,9 @@ private fun MdParagraph(text: String) {
                 }
                 Text(
                     inlineSpans(content),
-                    style = style,
+                    style = style.copy(
+                        color = MaterialTheme.colorScheme.onSurface
+                    ),
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.padding(top = 10.dp, bottom = 4.dp)
                 )
@@ -149,11 +174,12 @@ private fun MdParagraph(text: String) {
                         i++
                     }
                 }
-                Text(
+                LinkedText(
                     inlineSpans(quote),
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontStyle = FontStyle.Italic,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontStyle = FontStyle.Italic,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    ),
                     modifier = Modifier.padding(vertical = 2.dp)
                 )
             }
@@ -171,7 +197,7 @@ private fun MdParagraph(text: String) {
                         Row(Modifier.padding(vertical = 1.dp)) {
                             Text(marker, style = MaterialTheme.typography.bodyMedium)
                             Spacer(Modifier.width(8.dp))
-                            Text(
+                            LinkedText(
                                 inlineSpans(content),
                                 style = MaterialTheme.typography.bodyMedium,
                                 modifier = Modifier.weight(1f)
@@ -198,7 +224,7 @@ private fun MdParagraph(text: String) {
                         i++
                     }
                 }
-                Text(
+                LinkedText(
                     inlineSpans(para),
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(vertical = 2.dp)
@@ -253,8 +279,7 @@ private fun inlineSpans(text: String): AnnotatedString {
                         } else {
                             val label = text.substring(i + 1, mid)
                             val url = text.substring(mid + 2, end)
-                            val annotation = LinkAnnotation.Url(url)
-                            pushLink(annotation)
+                            pushStringAnnotation(UrlTag, url)
                             withStyle(
                                 SpanStyle(
                                     color = Color(0xFF4C8DFF),
