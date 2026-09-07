@@ -486,7 +486,8 @@ private fun QuestionDock(
 ) {
     var minimized by remember(request.id) { mutableStateOf(false) }
     var tab by remember(request.id) { mutableStateOf(0) }
-    val picked = remember(request.id) { mutableStateMapOf<Int, MutableSet<String>>() }
+    // Immutable sets: every toggle replaces the map entry so Compose recomposes.
+    val picked = remember(request.id) { mutableStateMapOf<Int, Set<String>>() }
     val customs = remember(request.id) { mutableStateMapOf<Int, String>() }
     val total = request.questions.size.coerceAtLeast(1)
     val safeTab = tab.coerceIn(0, total - 1)
@@ -549,36 +550,36 @@ private fun QuestionDock(
                     }
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         q.options.forEach { opt ->
-                            val set = picked.getOrPut(safeTab) { mutableSetOf() }
-                            val selected = opt.label in set
+                            val selected = picked[safeTab].orEmpty()
+                            val isSel = opt.label in selected
                             Row(
                                 verticalAlignment = Alignment.Top,
                                 modifier = Modifier.fillMaxWidth()
                                     .clickable {
-                                        if (q.multiple) {
-                                            if (!set.add(opt.label)) set.remove(opt.label)
+                                        picked[safeTab] = if (q.multiple) {
+                                            if (opt.label in selected) selected - opt.label
+                                            else selected + opt.label
                                         } else {
-                                            set.clear()
-                                            set.add(opt.label)
+                                            setOf(opt.label)
                                         }
                                     }
-                                    .padding(vertical = 2.dp)
+                                    .padding(vertical = 6.dp)
                             ) {
                                 Text(
                                     if (q.multiple) {
-                                        if (selected) "☑" else "☐"
+                                        if (isSel) "☑" else "☐"
                                     } else {
-                                        if (selected) "◉" else "○"
+                                        if (isSel) "◉" else "○"
                                     },
-                                    color = if (selected) MaterialTheme.colorScheme.primary
+                                    color = if (isSel) MaterialTheme.colorScheme.primary
                                     else MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.padding(end = 8.dp, top = 1.dp)
                                 )
                                 Column(Modifier.weight(1f)) {
                                     Text(
                                         opt.label,
-                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                                        color = if (selected) MaterialTheme.colorScheme.primary
+                                        fontWeight = if (isSel) FontWeight.SemiBold else FontWeight.Normal,
+                                        color = if (isSel) MaterialTheme.colorScheme.primary
                                         else MaterialTheme.colorScheme.onSurface
                                     )
                                     if (opt.description.isNotBlank()) {
@@ -592,15 +593,13 @@ private fun QuestionDock(
                             }
                         }
                     }
-                    if (q.custom) {
-                        OutlinedTextField(
-                            value = customs[safeTab] ?: "",
-                            onValueChange = { customs[safeTab] = it },
-                            label = { Text("Or type your own answer") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true
-                        )
-                    }
+                    OutlinedTextField(
+                        value = customs[safeTab] ?: "",
+                        onValueChange = { customs[safeTab] = it },
+                        label = { Text("Type your own answer (optional)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        maxLines = 3
+                    )
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -619,9 +618,10 @@ private fun QuestionDock(
                             ) { Text(if (total > 1) "Answer all" else "Answer") }
                         }
                     }
-                    if (total > 1 && !(0 until total).all { isAnswered(it) }) {
+                    if (safeTab == total - 1 && !(0 until total).all { isAnswered(it) }) {
                         Text(
-                            "Answer every question to continue (or Skip).",
+                            if (total > 1) "Answer every question to continue (or Skip)."
+                            else "Pick an option or type an answer (or Skip).",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

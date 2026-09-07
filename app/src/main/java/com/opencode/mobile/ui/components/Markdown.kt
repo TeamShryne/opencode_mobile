@@ -38,9 +38,12 @@ private fun LinkedText(
     modifier: Modifier = Modifier
 ) {
     val uriHandler = LocalUriHandler.current
+    // Explicit theme color: ClickableText must not fall back to black in dark mode.
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    val merged = if (style.color == Color.Unspecified) style.copy(color = onSurface) else style
     ClickableText(
         text = text,
-        style = style,
+        style = merged,
         modifier = modifier,
         onClick = { offset ->
             text.getStringAnnotations(UrlTag, offset, offset).firstOrNull()?.let {
