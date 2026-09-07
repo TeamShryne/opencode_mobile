@@ -1,6 +1,8 @@
 package com.opencode.mobile.ui
 
 import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -11,6 +13,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.view.View
+import android.webkit.ConsoleMessage
 import android.webkit.HttpAuthHandler
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -70,6 +73,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.opencode.mobile.data.WebPrefs
 import com.opencode.mobile.data.WebSettings as AppWebSettings
 import com.opencode.mobile.util.ShakeDetector
+import com.opencode.mobile.util.WebDiagnostics
 import kotlinx.coroutines.launch
 
 private const val DESKTOP_UA =
@@ -168,6 +172,7 @@ private fun buildWebView(
                 failingUrl: String
             ) {
                 // Deprecated callback = main frame only.
+                WebDiagnostics.log("network: $description ($errorCode) $failingUrl")
                 onPageError("$description ($errorCode)")
             }
 
@@ -177,7 +182,9 @@ private fun buildWebView(
                 error: WebResourceError
             ) {
                 if (request.isForMainFrame) {
-                    onPageError(error.description?.toString() ?: "Page failed to load")
+                    val desc = error.description?.toString() ?: "Page failed to load"
+                    WebDiagnostics.log("network: $desc ${request.url}")
+                    onPageError(desc)
                 }
             }
 
@@ -187,7 +194,13 @@ private fun buildWebView(
                 errorResponse: WebResourceResponse
             ) {
                 if (request.isForMainFrame && errorResponse.statusCode >= 400) {
-                    onPageError("HTTP ${errorResponse.statusCode}")
+                    val msg = "HTTP ${errorResponse.statusCode}"
+                    WebDiagnostics.log("network: $msg ${request.url}")
+                    onPageError(msg)
+                } else if (errorResponse.statusCode >= 400) {
+                    WebDiagnostics.log(
+                        "network: HTTP ${errorResponse.statusCode} ${request.url}"
+                    )
                 }
             }
 
@@ -205,7 +218,19 @@ private fun buildWebView(
                 }
             }
         }
-        webChromeClient = WebChromeClient()
+        webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(msg: ConsoleMessage): Boolean {
+                if (msg.messageLevel() == ConsoleMessage.MessageLevel.ERROR ||
+                    msg.messageLevel() == ConsoleMessage.MessageLevel.WARNING
+                ) {
+                    WebDiagnostics.log(
+                        "console:${msg.messageLevel().name.lowercase()} " +
+                            "${msg.message()} @ ${msg.sourceId()}:${msg.lineNumber()}"
+                    )
+                }
+                return super.onConsoleMessage(msg)
+            }
+        }
     }
 }
 
@@ -751,7 +776,84 @@ fun WebViewScreen(prefs: WebPrefs) {
                     },
                     modifier = Modifier.fillMaxWidth()
                 ) { Text("Open in external browser (compare rendering)") }
+
+                DiagnosticsSection(
+                    currentUrl = webView.url ?: loadedUrl ?: saved.serverUrl.trim()
+                )
             }
+        }
+    }
+}
+
+@Composable
+private fun DiagnosticsSection(currentUrl: String?) {
+    val context = LocalContext.current
+    val diagLines by WebDiagnostics.lines.collectAsState()
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text("Diagnostics", style = MaterialTheme.typography.titleSmall)
+        Text(
+            "WebView: ${WebDiagnostics.webViewVersion(context)}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        if (!currentUrl.isNullOrBlank()) {
+            Text(
+                "URL: $currentUrl",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            ),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                if (diagLines.isEmpty()) {
+                    Text(
+                        "No page errors captured yet. Reload the page, then check back here.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    diagLines.takeLast(10).forEach { line ->
+                        Text(
+                            line,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(bottom = 4.dp)
+                        )
+                    }
+                }
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            OutlinedButton(
+                onClick = { WebDiagnostics.clear() },
+                modifier = Modifier.weight(1f)
+            ) { Text("Clear") }
+            OutlinedButton(
+                onClick = {
+                    val text = buildString {
+                        append("WebView: ${WebDiagnostics.webViewVersion(context)}\n")
+                        append("URL: ${currentUrl ?: "(none)"}\n")
+                        diagLines.forEach { append(it).append('\n') }
+                    }
+                    try {
+                        val cm = context.getSystemService(ClipboardManager::class.java)
+                        cm?.setPrimaryClip(ClipData.newPlainText("diagnostics", text))
+                    } catch (_: Exception) {
+                    }
+                },
+                modifier = Modifier.weight(1f)
+            ) { Text("Copy") }
         }
     }
 }
