@@ -2,6 +2,7 @@ package com.opencode.mobile.ui
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Bitmap
 import android.hardware.SensorManager
 import android.os.Build
 import android.os.VibrationEffect
@@ -10,6 +11,9 @@ import android.os.VibratorManager
 import android.view.View
 import android.webkit.HttpAuthHandler
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -29,6 +33,9 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -76,6 +83,9 @@ private const val NO_ZOOM_JS =
 private fun buildWebView(
     context: Context,
     onHistoryChange: (canGoBack: Boolean, canGoForward: Boolean) -> Unit,
+    onPageStarted: () -> Unit,
+    onPageFinishedOk: () -> Unit,
+    onPageError: (String) -> Unit,
     authProvider: () -> Pair<String, String>
 ): WebView {
     return WebView(context).apply {
@@ -112,10 +122,15 @@ private fun buildWebView(
 
             override fun shouldOverrideUrlLoading(
                 view: WebView,
-                request: android.webkit.WebResourceRequest
+                request: WebResourceRequest
             ): Boolean {
                 // Stay inside the app.
                 return false
+            }
+
+            override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                onPageStarted()
             }
 
             override fun onPageFinished(view: WebView, url: String) {
@@ -123,11 +138,43 @@ private fun buildWebView(
                 // Enforce non-zoomable viewport even if the page allows scaling.
                 view.evaluateJavascript(NO_ZOOM_JS, null)
                 onHistoryChange(view.canGoBack(), view.canGoForward())
+                onPageFinishedOk()
             }
 
             override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
                 super.doUpdateVisitedHistory(view, url, isReload)
                 onHistoryChange(view.canGoBack(), view.canGoForward())
+            }
+
+            @Suppress("DEPRECATION")
+            override fun onReceivedError(
+                view: WebView,
+                errorCode: Int,
+                description: String,
+                failingUrl: String
+            ) {
+                // Deprecated callback = main frame only.
+                onPageError("$description ($errorCode)")
+            }
+
+            override fun onReceivedError(
+                view: WebView,
+                request: WebResourceRequest,
+                error: WebResourceError
+            ) {
+                if (request.isForMainFrame) {
+                    onPageError(error.description?.toString() ?: "Page failed to load")
+                }
+            }
+
+            override fun onReceivedHttpError(
+                view: WebView,
+                request: WebResourceRequest,
+                errorResponse: WebResourceResponse
+            ) {
+                if (request.isForMainFrame && errorResponse.statusCode >= 400) {
+                    onPageError("HTTP ${errorResponse.statusCode}")
+                }
             }
 
             override fun onReceivedHttpAuthRequest(
@@ -161,7 +208,10 @@ fun WebViewScreen(prefs: WebPrefs) {
     var canGoBack by remember { mutableStateOf(false) }
     var canGoForward by remember { mutableStateOf(false) }
     var authHolder by remember { mutableStateOf(Pair("opencode", "")) }
-    var initialLoadDone by remember { mutableStateOf(false) }
+    var loadedUrl by remember { mutableStateOf<String?>(null) }
+    var isLoading by remember { mutableStateOf(true) }
+    var pageLoaded by remember { mutableStateOf(false) }
+    var errorMsg by remember { mutableStateOf<String?>(null) }
 
     // Draft values edited inside the sheet.
     var draftUrl by remember { mutableStateOf<String?>(null) }
@@ -170,12 +220,30 @@ fun WebViewScreen(prefs: WebPrefs) {
     var draftZoom by remember { mutableStateOf<Int?>(null) }
     var draftDesktop by remember { mutableStateOf<Boolean?>(null) }
 
+    // First-run setup field.
+    var setupUrl by remember { mutableStateOf<String?>(null) }
+
     val webView = remember {
         buildWebView(
             context = context,
             onHistoryChange = { back, forward ->
                 canGoBack = back
                 canGoForward = forward
+            },
+            onPageStarted = {
+                isLoading = true
+                errorMsg = null
+            },
+            onPageFinishedOk = {
+                isLoading = false
+                // onReceivedError runs before onPageFinished for the same
+                // navigation, so only count clean finishes as loaded.
+                if (errorMsg == null) pageLoaded = true
+            },
+            onPageError = { desc ->
+                isLoading = false
+                // Keep the first error; onPageFinished follows right after.
+                if (errorMsg == null) errorMsg = desc
             },
             authProvider = { authHolder }
         )
@@ -195,15 +263,38 @@ fun WebViewScreen(prefs: WebPrefs) {
         val want = if (saved.desktopMode) DESKTOP_UA else defaultUa
         if (webView.settings.userAgentString != want) {
             webView.settings.userAgentString = want
-            if (initialLoadDone) webView.reload()
+            if (loadedUrl != null) {
+                errorMsg = null
+                isLoading = true
+                webView.reload()
+            }
         }
     }
-    // Initial load (and reload when the saved server URL changes from the sheet).
+    // Load whenever the saved server URL changes (fixes stale-URL black screen:
+    // previously the first default URL won and the real saved URL was ignored).
     LaunchedEffect(saved.serverUrl) {
         val target = saved.serverUrl.trim().trimEnd('/')
-        if (target.isNotBlank() && !initialLoadDone) {
+        if (target.isNotBlank() && target != loadedUrl) {
+            loadedUrl = target
+            errorMsg = null
+            isLoading = true
             webView.loadUrl(target)
-            initialLoadDone = true
+        } else if (target.isBlank()) {
+            isLoading = false
+        }
+    }
+
+    fun retry() {
+        val target = saved.serverUrl.trim().trimEnd('/')
+        errorMsg = null
+        isLoading = true
+        if (target.isBlank()) return
+        loadedUrl = target
+        try {
+            if (webView.url == null) webView.loadUrl(target) else webView.reload()
+        } catch (_: Exception) {
+            isLoading = false
+            errorMsg = "WebView error"
         }
     }
 
@@ -231,7 +322,13 @@ fun WebViewScreen(prefs: WebPrefs) {
         webView.goBack()
     }
 
-    // Nothing but the WebView on screen.
+    val attemptedUrl = loadedUrl ?: saved.serverUrl.trim().trimEnd('/')
+    val isFirstRun = !saved.hasConfigured &&
+        (saved.serverUrl.isBlank() ||
+            saved.serverUrl.trim().trimEnd('/') == AppWebSettings.DEFAULT_SERVER_URL)
+
+    // Nothing but the WebView on screen once it loads; setup/error cards only
+    // overlay until the first page succeeds.
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -241,6 +338,200 @@ fun WebViewScreen(prefs: WebPrefs) {
             factory = { webView },
             modifier = Modifier.fillMaxSize()
         )
+
+        if (!pageLoaded) {
+            when {
+                // First run: show setup immediately instead of a black screen
+                // while the unreachable placeholder times out.
+                isFirstRun && errorMsg == null -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.85f))
+                            .padding(24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Card(
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surface
+                            )
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(20.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Text("Connect to opencode", style = MaterialTheme.typography.titleLarge)
+                                Text(
+                                    "Enter the address of your opencode web UI on your network.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                OutlinedTextField(
+                                    value = setupUrl ?: saved.serverUrl,
+                                    onValueChange = { setupUrl = it },
+                                    label = { Text("Server URL") },
+                                    placeholder = { Text("http://192.168.1.10:4096") },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(
+                                        keyboardType = KeyboardType.Uri,
+                                        imeAction = ImeAction.Go
+                                    ),
+                                    keyboardActions = KeyboardActions(onGo = {
+                                        focusManager.clearFocus()
+                                        val cleaned =
+                                            (setupUrl ?: saved.serverUrl).trim().trimEnd('/')
+                                        if (cleaned.isBlank()) return@KeyboardActions
+                                        scope.launch {
+                                            prefs.save(
+                                                saved.copy(
+                                                    serverUrl = cleaned,
+                                                    hasConfigured = true
+                                                )
+                                            )
+                                        }
+                                    }),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Button(
+                                    onClick = {
+                                        focusManager.clearFocus()
+                                        val cleaned =
+                                            (setupUrl ?: saved.serverUrl).trim().trimEnd('/')
+                                        if (cleaned.isBlank()) return@Button
+                                        scope.launch {
+                                            prefs.save(
+                                                saved.copy(
+                                                    serverUrl = cleaned,
+                                                    hasConfigured = true
+                                                )
+                                            )
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("Connect")
+                                }
+                                TextButton(
+                                    onClick = { showSheet = true },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("More options (user, password, text size)")
+                                }
+                            }
+                        }
+                    }
+                }
+                errorMsg != null -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.85f))
+                            .padding(24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Card(
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surface
+                            )
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(20.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Text(
+                                    "Couldn't reach the server",
+                                    style = MaterialTheme.typography.titleLarge
+                                )
+                                Text(
+                                    attemptedUrl.ifBlank { "(no URL set)" },
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    errorMsg ?: "Load failed",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    "Check the address, make sure the server is running and this " +
+                                        "phone is on the same network. Shake the phone anytime for options.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    OutlinedButton(
+                                        onClick = { showSheet = true },
+                                        modifier = Modifier.weight(1f)
+                                    ) { Text("Options") }
+                                    Button(
+                                        onClick = { retry() },
+                                        modifier = Modifier.weight(1f)
+                                    ) { Text("Retry") }
+                                }
+                            }
+                        }
+                    }
+                }
+                isLoading -> {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.padding(24.dp)
+                        ) {
+                            CircularProgressIndicator()
+                            Text(
+                                "Loading…",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = Color.White.copy(alpha = 0.7f)
+                            )
+                            if (attemptedUrl.isNotBlank()) {
+                                Text(
+                                    attemptedUrl,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color.White.copy(alpha = 0.5f)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        } else if (errorMsg != null) {
+            // A later in-app navigation failed: non-blocking banner.
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp),
+                contentAlignment = Alignment.BottomCenter
+            ) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            errorMsg ?: "Load failed",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = { retry() }) { Text("Retry") }
+                        TextButton(onClick = { errorMsg = null }) { Text("Hide") }
+                    }
+                }
+            }
+        }
     }
 
     if (showSheet) {
@@ -358,7 +649,8 @@ fun WebViewScreen(prefs: WebPrefs) {
                             username = (draftUser ?: saved.username),
                             password = (draftPass ?: saved.password),
                             textZoom = (draftZoom ?: saved.textZoom).coerceIn(50, 200),
-                            desktopMode = (draftDesktop ?: saved.desktopMode)
+                            desktopMode = (draftDesktop ?: saved.desktopMode),
+                            hasConfigured = true
                         )
                         val urlChanged =
                             next.serverUrl.trim().trimEnd('/') != saved.serverUrl.trim().trimEnd('/')
@@ -369,11 +661,19 @@ fun WebViewScreen(prefs: WebPrefs) {
                             prefs.save(next)
                             val target = next.serverUrl.trim().trimEnd('/')
                             when {
-                                urlChanged && target.isNotBlank() -> webView.loadUrl(target)
-                                authChanged || desktopChanged -> webView.reload()
+                                urlChanged && target.isNotBlank() -> {
+                                    loadedUrl = target
+                                    errorMsg = null
+                                    isLoading = true
+                                    webView.loadUrl(target)
+                                }
+                                authChanged || desktopChanged -> {
+                                    errorMsg = null
+                                    isLoading = true
+                                    webView.reload()
+                                }
                                 // Text zoom applies via LaunchedEffect without a reload.
                             }
-                            initialLoadDone = true
                             showSheet = false
                             draftUrl = null
                             draftUser = null
@@ -392,7 +692,7 @@ fun WebViewScreen(prefs: WebPrefs) {
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     OutlinedButton(
-                        onClick = { webView.reload() },
+                        onClick = { retry() },
                         modifier = Modifier.weight(1f)
                     ) { Text("Reload") }
                     OutlinedButton(
@@ -400,7 +700,7 @@ fun WebViewScreen(prefs: WebPrefs) {
                             webView.clearCache(true)
                             webView.clearFormData()
                             webView.clearHistory()
-                            webView.reload()
+                            retry()
                         },
                         modifier = Modifier.weight(1f)
                     ) { Text("Clear & reload") }

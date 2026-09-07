@@ -16,7 +16,8 @@ data class WebSettings(
     val username: String = "opencode",
     val password: String = "",
     val textZoom: Int = 100,
-    val desktopMode: Boolean = false
+    val desktopMode: Boolean = false,
+    val hasConfigured: Boolean = false
 ) {
     companion object {
         const val DEFAULT_SERVER_URL = "http://192.168.1.10:4096"
@@ -29,6 +30,7 @@ class WebPrefs(private val context: Context) {
     private val passKey = stringPreferencesKey("password")
     private val zoomKey = intPreferencesKey("text_zoom")
     private val desktopKey = booleanPreferencesKey("desktop_mode")
+    private val configuredKey = booleanPreferencesKey("has_configured")
 
     val settings: Flow<WebSettings> = context.webDataStore.data.map { p ->
         WebSettings(
@@ -36,7 +38,8 @@ class WebPrefs(private val context: Context) {
             username = p[userKey] ?: "opencode",
             password = p[passKey] ?: "",
             textZoom = (p[zoomKey] ?: 100).coerceIn(50, 200),
-            desktopMode = p[desktopKey] ?: false
+            desktopMode = p[desktopKey] ?: false,
+            hasConfigured = p[configuredKey] ?: false
         )
     }
 
@@ -47,6 +50,7 @@ class WebPrefs(private val context: Context) {
             p[passKey] = s.password
             p[zoomKey] = s.textZoom.coerceIn(50, 200)
             p[desktopKey] = s.desktopMode
+            p[configuredKey] = s.hasConfigured
         }
     }
 }
