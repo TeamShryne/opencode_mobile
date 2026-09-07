@@ -260,9 +260,9 @@ fun CommandSheet(
                                 )
                                 if (selected) Text("✓", color = MaterialTheme.colorScheme.primary)
                             }
-                            if (c.description.isNotBlank()) {
+                            if (c.description.orEmpty().isNotBlank()) {
                                 Text(
-                                    c.description,
+                                    c.description.orEmpty(),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
