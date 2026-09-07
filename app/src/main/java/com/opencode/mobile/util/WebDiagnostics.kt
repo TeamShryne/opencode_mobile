@@ -16,6 +16,13 @@ object WebDiagnostics {
     private val _lines = MutableStateFlow<List<String>>(emptyList())
     val lines: StateFlow<List<String>> = _lines.asStateFlow()
 
+    private val _probe = MutableStateFlow<String?>(null)
+    val probe: StateFlow<String?> = _probe.asStateFlow()
+
+    fun setProbe(result: String?) {
+        _probe.value = result?.take(500)
+    }
+
     fun log(msg: String) {
         val stamped = msg.take(300)
         _lines.value = (_lines.value + stamped).takeLast(MAX_LINES)
@@ -23,6 +30,7 @@ object WebDiagnostics {
 
     fun clear() {
         _lines.value = emptyList()
+        _probe.value = null
     }
 
     fun webViewVersion(context: Context): String {

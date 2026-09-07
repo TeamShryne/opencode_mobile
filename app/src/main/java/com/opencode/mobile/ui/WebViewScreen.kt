@@ -148,6 +148,7 @@ private fun buildWebView(
 
             override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
+                WebDiagnostics.log("nav: $url")
                 onPageStarted()
             }
 
@@ -185,6 +186,11 @@ private fun buildWebView(
                     val desc = error.description?.toString() ?: "Page failed to load"
                     WebDiagnostics.log("network: $desc ${request.url}")
                     onPageError(desc)
+                } else {
+                    // Subresource/XHR/fetch failures (e.g. API calls the page makes).
+                    WebDiagnostics.log(
+                        "subresource: ${error.description} ${request.url}"
+                    )
                 }
             }
 
@@ -217,17 +223,35 @@ private fun buildWebView(
                     super.onReceivedHttpAuthRequest(view, handler, host, realm)
                 }
             }
+
+            override fun shouldInterceptRequest(
+                view: WebView,
+                request: WebResourceRequest
+            ): WebResourceResponse? {
+                // Log data-ish requests (API/XHR/navigation) so we can see whether
+                // the page even attempts to fetch its content. Static assets skipped.
+                try {
+                    val url = request.url?.toString() ?: ""
+                    val path = request.url?.path ?: ""
+                    val staticExt = listOf(
+                        ".js", ".css", ".map", ".png", ".jpg", ".jpeg", ".gif",
+                        ".svg", ".ico", ".woff", ".woff2", ".ttf", ".webp"
+                    )
+                    val isStatic = staticExt.any { path.endsWith(it, ignoreCase = true) }
+                    if (!isStatic && !url.startsWith("data:") && !url.startsWith("blob:")) {
+                        WebDiagnostics.log("req: ${request.method} $url")
+                    }
+                } catch (_: Exception) {
+                }
+                return super.shouldInterceptRequest(view, request)
+            }
         }
         webChromeClient = object : WebChromeClient() {
             override fun onConsoleMessage(msg: ConsoleMessage): Boolean {
-                if (msg.messageLevel() == ConsoleMessage.MessageLevel.ERROR ||
-                    msg.messageLevel() == ConsoleMessage.MessageLevel.WARNING
-                ) {
-                    WebDiagnostics.log(
-                        "console:${msg.messageLevel().name.lowercase()} " +
-                            "${msg.message()} @ ${msg.sourceId()}:${msg.lineNumber()}"
-                    )
-                }
+                WebDiagnostics.log(
+                    "console:${msg.messageLevel().name.lowercase()} " +
+                        "${msg.message()} @ ${msg.sourceId()}:${msg.lineNumber()}"
+                )
                 return super.onConsoleMessage(msg)
             }
         }
@@ -778,7 +802,8 @@ fun WebViewScreen(prefs: WebPrefs) {
                 ) { Text("Open in external browser (compare rendering)") }
 
                 DiagnosticsSection(
-                    currentUrl = webView.url ?: loadedUrl ?: saved.serverUrl.trim()
+                    currentUrl = webView.url ?: loadedUrl ?: saved.serverUrl.trim(),
+                    webView = webView
                 )
             }
         }
@@ -786,9 +811,10 @@ fun WebViewScreen(prefs: WebPrefs) {
 }
 
 @Composable
-private fun DiagnosticsSection(currentUrl: String?) {
+private fun DiagnosticsSection(currentUrl: String?, webView: WebView) {
     val context = LocalContext.current
     val diagLines by WebDiagnostics.lines.collectAsState()
+    val probe by WebDiagnostics.probe.collectAsState()
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -844,6 +870,7 @@ private fun DiagnosticsSection(currentUrl: String?) {
                     val text = buildString {
                         append("WebView: ${WebDiagnostics.webViewVersion(context)}\n")
                         append("URL: ${currentUrl ?: "(none)"}\n")
+                        append("Probe: ${probe ?: "(not run)"}\n")
                         diagLines.forEach { append(it).append('\n') }
                     }
                     try {
@@ -854,6 +881,44 @@ private fun DiagnosticsSection(currentUrl: String?) {
                 },
                 modifier = Modifier.weight(1f)
             ) { Text("Copy") }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            OutlinedButton(
+                onClick = {
+                    WebDiagnostics.clear()
+                    WebDiagnostics.setProbe(null)
+                    try {
+                        webView.reload()
+                    } catch (_: Exception) {
+                    }
+                },
+                modifier = Modifier.weight(1f)
+            ) { Text("Reload & capture") }
+            OutlinedButton(
+                onClick = {
+                    try {
+                        webView.evaluateJavascript(
+                            "(function(){try{return JSON.stringify({html:" +
+                                "document.documentElement.outerHTML.length,text:" +
+                                "document.body?document.body.innerText.slice(0,300):''});}" +
+                                "catch(e){return JSON.stringify({error:String(e)});}})()",
+                            WebDiagnostics::setProbe
+                        )
+                    } catch (_: Exception) {
+                    }
+                },
+                modifier = Modifier.weight(1f)
+            ) { Text("Probe content") }
+        }
+        if (probe != null) {
+            Text(
+                "Probe: $probe",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
