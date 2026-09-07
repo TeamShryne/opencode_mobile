@@ -140,6 +140,23 @@ interface OpencodeApi {
         @Body body: PermissionRespondRequest
     ): Boolean
 
+    // Pending approvals (reconcile on refresh; live via permission.asked/replied)
+    @GET("permission")
+    suspend fun pendingPermissions(): List<PermissionRequestDto>
+
+    // Questions (live via question.asked/replied/rejected)
+    @GET("question")
+    suspend fun pendingQuestions(): List<QuestionRequestDto>
+
+    @POST("question/{requestID}/reply")
+    suspend fun replyQuestion(
+        @Path("requestID") requestID: String,
+        @Body body: QuestionReplyRequest
+    ): Boolean
+
+    @POST("question/{requestID}/reject")
+    suspend fun rejectQuestion(@Path("requestID") requestID: String): Boolean
+
     // Messages
     @GET("session/{id}/message")
     suspend fun messages(

@@ -2,6 +2,8 @@ package com.opencode.mobile.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -14,6 +16,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -30,9 +33,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -42,12 +47,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -58,6 +65,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.opencode.mobile.OpencodeApp
 import com.opencode.mobile.data.OpencodeRepository
+import com.opencode.mobile.data.PendingQuestion
 import com.opencode.mobile.data.SseState
 import com.opencode.mobile.ui.viewmodel.ChatUiState
 import com.opencode.mobile.ui.viewmodel.ChatViewModel
@@ -122,6 +130,9 @@ fun AgentHomeScreen(
 
     val busy = chatUi.sending || chatUi.liveBusy ||
         (selectedId?.let { sessionsUi.statuses[it]?.type } == "busy")
+    val busyIds = remember(sessionsUi.statuses) {
+        sessionsUi.statuses.filterValues { it.type != "idle" }.keys
+    }
     val title = selectedId?.let { id ->
         sessionsUi.sessions.firstOrNull { it.id == id }?.title?.ifBlank { null }
     } ?: "New chat"
@@ -153,6 +164,7 @@ fun AgentHomeScreen(
             SessionsDrawer(
                 sessions = sessionsUi.sessions,
                 selectedId = selectedId,
+                busyIds = busyIds,
                 loading = sessionsUi.loading,
                 serverLabel = repo.settings.baseUrl,
                 onNew = {
@@ -227,54 +239,50 @@ fun AgentHomeScreen(
                 Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
                     if (chatUi.todos.isNotEmpty()) {
                         val done = chatUi.todos.count { it.status == "completed" }
+                        val active = chatUi.todos.firstOrNull { it.status == "in_progress" }
+                            ?: chatUi.todos.firstOrNull { it.status != "completed" }
                         Text(
                             "$done of ${chatUi.todos.size} tasks done",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
+                            modifier = Modifier.padding(start = 4.dp)
                         )
+                        active?.let {
+                            Text(
+                                "• " + it.content.take(90),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
+                            )
+                        }
                     }
                     chatUi.pendingPermissions.firstOrNull()?.let { perm ->
                         PermissionCard(
                             title = perm.title,
                             kind = perm.kind,
+                            patterns = perm.patterns,
                             onAllow = { chatVm?.respondPermission(perm.id, "once") },
                             onAlways = { chatVm?.respondPermission(perm.id, "always") },
                             onDeny = { chatVm?.respondPermission(perm.id, "reject") }
                         )
                     }
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        AssistChip(
-                            onClick = { sheetOpen = true },
-                            label = {
-                                Text(chatUi.model?.let { "${it.providerID}/${it.modelID}" }
-                                    ?: "Assistant: ${chatUi.agent}")
-                            }
+                    chatUi.pendingQuestions.firstOrNull()?.let { q ->
+                        QuestionCard(
+                            request = q,
+                            onSubmit = { answers -> chatVm?.replyQuestion(q.id, answers) },
+                            onSkip = { chatVm?.rejectQuestion(q.id) }
                         )
                     }
-                    Row(
-                        verticalAlignment = Alignment.Bottom,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        OutlinedTextField(
-                            value = input,
-                            onValueChange = { input = it },
-                            modifier = Modifier.weight(1f),
-                            placeholder = { Text("Ask anything…  ( / for commands )") },
-                            shape = RoundedCornerShape(24.dp),
-                            maxLines = 5
-                        )
-                        FilledIconButton(
-                            onClick = { submit() },
-                            enabled = input.isBlank().not() && !busy
-                        ) {
-                            Icon(Icons.Filled.Send, contentDescription = "Send")
-                        }
-                    }
+                    ComposerBox(
+                        input = input,
+                        onInput = { input = it },
+                        busy = busy,
+                        modelLabel = chatUi.model?.let { "${it.providerID}/${it.modelID}" }
+                            ?: "Assistant: ${chatUi.agent}",
+                        onModelClick = { sheetOpen = true },
+                        onSend = { submit() },
+                        onStop = { chatVm?.abort() }
+                    )
                     chatUi.error?.let {
                         Text(
                             it,
@@ -299,6 +307,8 @@ fun AgentHomeScreen(
                     ChatThread(
                         messages = chatUi.messages,
                         streaming = busy,
+                        title = title,
+                        onRename = { t -> selectedId?.let { sessionsVm.rename(it, t) } },
                         onRevert = { msgId -> chatVm?.revert(msgId) },
                         onFork = { msgId ->
                             chatVm?.fork(msgId.ifBlank { null }) { newId ->
@@ -336,6 +346,7 @@ fun AgentHomeScreen(
 private fun PermissionCard(
     title: String,
     kind: String,
+    patterns: List<String>,
     onAllow: () -> Unit,
     onAlways: () -> Unit,
     onDeny: () -> Unit
@@ -347,15 +358,147 @@ private fun PermissionCard(
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Needs your approval", fontWeight = FontWeight.Bold)
             Text(title, style = MaterialTheme.typography.bodyMedium)
-            Text(
-                kind,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            val sub = (listOf(kind) + patterns).filter { it.isNotBlank() }.joinToString(" · ")
+            if (sub.isNotBlank()) {
+                Text(
+                    sub,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onAllow) { Text("Allow") }
-                TextButton(onClick = onAlways) { Text("Always") }
                 TextButton(onClick = onDeny) { Text("Deny") }
+                TextButton(onClick = onAlways) { Text("Always") }
+                Spacer(Modifier.weight(1f))
+                Button(onClick = onAllow) { Text("Allow") }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun QuestionCard(
+    request: PendingQuestion,
+    onSubmit: (List<List<String>>) -> Unit,
+    onSkip: () -> Unit
+) {
+    val picked = remember(request.id) { mutableStateMapOf<Int, MutableSet<String>>() }
+    val customs = remember(request.id) { mutableStateMapOf<Int, String>() }
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Question", fontWeight = FontWeight.Bold)
+            request.questions.forEachIndexed { qi, q ->
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (q.header.isNotBlank()) {
+                        Text(
+                            q.header,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    if (q.question.isNotBlank()) {
+                        Text(q.question, style = MaterialTheme.typography.bodyMedium)
+                    }
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        q.options.forEach { opt ->
+                            val set = picked.getOrPut(qi) { mutableSetOf() }
+                            FilterChip(
+                                selected = opt.label in set,
+                                onClick = {
+                                    if (q.multiple) {
+                                        if (!set.add(opt.label)) set.remove(opt.label)
+                                    } else {
+                                        set.clear()
+                                        set.add(opt.label)
+                                    }
+                                },
+                                label = { Text(opt.label) }
+                            )
+                        }
+                    }
+                    if (q.custom) {
+                        OutlinedTextField(
+                            value = customs[qi] ?: "",
+                            onValueChange = { customs[qi] = it },
+                            label = { Text("Or type your own answer") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+                    }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = onSkip) { Text("Skip") }
+                Spacer(Modifier.weight(1f))
+                Button(onClick = {
+                    onSubmit(request.questions.mapIndexed { qi, _ ->
+                        val set = picked[qi].orEmpty().toMutableList()
+                        customs[qi]?.trim()?.takeIf { it.isNotEmpty() }?.let { set += it }
+                        set.toList()
+                    })
+                }) { Text("Answer") }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ComposerBox(
+    input: String,
+    onInput: (String) -> Unit,
+    busy: Boolean,
+    modelLabel: String,
+    onModelClick: () -> Unit,
+    onSend: () -> Unit,
+    onStop: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.padding(4.dp)) {
+            OutlinedTextField(
+                value = input,
+                onValueChange = onInput,
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Ask anything…  ( / commands · ! shell )") },
+                shape = RoundedCornerShape(16.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Color.Transparent,
+                    unfocusedBorderColor = Color.Transparent,
+                    disabledBorderColor = Color.Transparent,
+                    errorBorderColor = Color.Transparent,
+                    focusedContainerColor = Color.Transparent,
+                    unfocusedContainerColor = Color.Transparent,
+                    disabledContainerColor = Color.Transparent,
+                    errorContainerColor = Color.Transparent
+                ),
+                maxLines = 6
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp)
+            ) {
+                AssistChip(
+                    onClick = onModelClick,
+                    label = { Text(modelLabel, maxLines = 1) }
+                )
+                Spacer(Modifier.weight(1f))
+                if (busy) {
+                    FilledIconButton(onClick = onStop) {
+                        Icon(Icons.Filled.Stop, contentDescription = "Stop")
+                    }
+                } else {
+                    FilledIconButton(onClick = onSend, enabled = input.isBlank().not()) {
+                        Icon(Icons.Filled.Send, contentDescription = "Send")
+                    }
+                }
             }
         }
     }

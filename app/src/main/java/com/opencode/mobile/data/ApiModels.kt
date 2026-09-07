@@ -320,8 +320,49 @@ data class RevertRequest(
 
 @Serializable
 data class PermissionRespondRequest(
-    val response: String,
-    val remember: Boolean? = null
+    val response: String
+)
+
+// Wire shapes (verified against openapi.json + live /event traffic):
+// permission.asked -> PermissionRequestDto directly; permission.replied ->
+// { sessionID, requestID }. question.asked -> QuestionRequestDto;
+// question.replied/rejected -> { sessionID, requestID }.
+// question reply body: answers in order, each an array of selected labels.
+@Serializable
+data class PermissionRequestDto(
+    val id: String = "",
+    val sessionID: String = "",
+    val permission: String = "",
+    val patterns: List<String> = emptyList(),
+    val metadata: JsonObject? = null,
+    val always: List<String> = emptyList()
+)
+
+@Serializable
+data class QuestionOptionDto(
+    val label: String = "",
+    val description: String = ""
+)
+
+@Serializable
+data class QuestionInfoDto(
+    val question: String = "",
+    val header: String = "",
+    val options: List<QuestionOptionDto> = emptyList(),
+    val multiple: Boolean = false,
+    val custom: Boolean = false
+)
+
+@Serializable
+data class QuestionRequestDto(
+    val id: String = "",
+    val sessionID: String = "",
+    val questions: List<QuestionInfoDto> = emptyList()
+)
+
+@Serializable
+data class QuestionReplyRequest(
+    val answers: List<List<String>>
 )
 
 @Serializable

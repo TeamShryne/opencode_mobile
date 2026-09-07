@@ -1,18 +1,28 @@
 package com.opencode.mobile.ui.components
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
@@ -56,9 +66,9 @@ private fun toolViewOf(part: JsonObject): ToolView {
         ?: partText(part)
     val inputHint = (state?.get("input") as? JsonObject)
         ?.entries?.firstOrNull()?.let { (_, v) ->
-            v.jsonPrimitive.content.take(140)
+            runCatching { v.jsonPrimitive.content }.getOrNull()?.take(140) ?: ""
         } ?: ""
-    val detail = (output.ifBlank { inputHint }).take(400)
+    val detail = (output.ifBlank { inputHint }).take(600)
     return ToolView(
         name = name,
         status = status,
@@ -69,9 +79,9 @@ private fun toolViewOf(part: JsonObject): ToolView {
 }
 
 /**
- * Typical coding-agent message rendering: user bubble on the right,
- * assistant as plain full-width text, tool activity as one-line rows.
- * Internal part kinds (steps, snapshots, retries, compaction) stay hidden.
+ * Web-style thread rows: user messages are full-width plain text (no
+ * bubble), assistant text renders as markdown, tool calls are expandable
+ * cards with live status. Internal part kinds stay hidden.
  */
 @Composable
 fun MessageBubble(
@@ -82,33 +92,19 @@ fun MessageBubble(
 ) {
     val role = message.info["role"]?.jsonPrimitive?.content ?: "unknown"
     if (role == "user") {
-        Box(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-            contentAlignment = Alignment.CenterEnd
-        ) {
-            Surface(
-                color = MaterialTheme.colorScheme.primaryContainer,
-                shape = RoundedCornerShape(18.dp)
-            ) {
-                Text(
-                    text = message.parts.filter { partType(it) == "text" }
-                        .joinToString("\n\n") { partText(it) }.ifBlank { "(empty)" },
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
-                )
-            }
+        val text = message.parts.filter { partType(it) == "text" }
+            .joinToString("\n\n") { partText(it) }.ifBlank { "(empty)" }
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+            MarkdownText(text)
         }
         return
     }
 
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
         val texts = message.parts.filter { partType(it) == "text" }.map { partText(it) }
             .filter { it.isNotBlank() }
         if (texts.isNotEmpty()) {
-            Text(
-                text = texts.joinToString("\n\n") + if (isLive) " ▍" else "",
-                style = MaterialTheme.typography.bodyMedium
-            )
+            MarkdownText(texts.joinToString("\n\n") + if (isLive) " ▍" else "")
         }
         message.parts.filter { partType(it) == "reasoning" }.forEach { part ->
             val t = partText(part).take(400)
@@ -123,46 +119,7 @@ fun MessageBubble(
             }
         }
         message.parts.filter { partType(it) == "tool" }.forEach { part ->
-            val tool = toolViewOf(part)
-            Surface(
-                color = if (tool.isError) MaterialTheme.colorScheme.errorContainer
-                else MaterialTheme.colorScheme.surfaceVariant,
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
-            ) {
-                Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                    val headline = when (tool.status) {
-                        "pending" -> "Queued ${tool.title}"
-                        "running" -> "${tool.title} — running…"
-                        "error" -> "${tool.title} — failed"
-                        else -> tool.title
-                    }
-                    Text(
-                        text = headline,
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (tool.isError) MaterialTheme.colorScheme.onErrorContainer
-                        else MaterialTheme.colorScheme.onSurface
-                    )
-                    if (tool.status == "running" || tool.status == "pending") {
-                        LinearProgressIndicator(
-                            modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
-                        )
-                    }
-                    if (tool.detail.isNotBlank()) {
-                        Text(
-                            text = tool.detail,
-                            style = MaterialTheme.typography.bodySmall,
-                            fontFamily = FontFamily.Monospace,
-                            color = if (tool.isError) MaterialTheme.colorScheme.onErrorContainer
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = if (tool.isError) 6 else 3,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(top = 2.dp)
-                        )
-                    }
-                }
-            }
+            ToolCard(toolViewOf(part))
         }
         message.parts.filter { partType(it) == "file" }.forEach { part ->
             val name = part["filename"]?.jsonPrimitive?.content
@@ -185,22 +142,24 @@ fun MessageBubble(
             )
         }
         message.info["error"]?.let { err ->
-            Text(
-                text = err.toString().take(300),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(top = 6.dp)
-            )
+            Surface(
+                color = MaterialTheme.colorScheme.errorContainer,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+            ) {
+                Text(
+                    text = err.toString().take(400),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.padding(12.dp)
+                )
+            }
         }
-        if (texts.isEmpty() && message.parts.none {
+        if (isLive && texts.isEmpty() && message.parts.none {
                 partType(it) in setOf("tool", "file", "patch", "reasoning")
             } && message.info["error"] == null
         ) {
-            Text(
-                text = "Working…",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            ThinkingRow()
         }
         if (onRevert != null || onFork != null) {
             Row(
@@ -219,5 +178,83 @@ fun MessageBubble(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ToolCard(tool: ToolView) {
+    // Running/failing tools start open so activity is visible; done ones collapse.
+    var open by remember(tool.name, tool.status) {
+        mutableStateOf(tool.status == "running" || tool.status == "pending" || tool.isError)
+    }
+    val headline = when (tool.status) {
+        "pending" -> "Queued ${tool.title}"
+        "running" -> "${tool.title} — running"
+        "error" -> "${tool.title} — failed"
+        else -> tool.title
+    }
+    Surface(
+        color = if (tool.isError) MaterialTheme.colorScheme.errorContainer
+        else MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+                    .clickable { open = !open }
+            ) {
+                if (tool.status == "running" || tool.status == "pending") {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        strokeWidth = 2.dp
+                    )
+                }
+                Text(
+                    text = headline,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (tool.isError) MaterialTheme.colorScheme.onErrorContainer
+                    else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f).padding(start = 4.dp)
+                )
+                Icon(
+                    if (open) Icons.Filled.KeyboardArrowDown else Icons.Filled.KeyboardArrowRight,
+                    contentDescription = if (open) "Collapse" else "Expand",
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            AnimatedVisibility(visible = open && tool.detail.isNotBlank()) {
+                Text(
+                    text = tool.detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = if (tool.isError) MaterialTheme.colorScheme.onErrorContainer
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = if (tool.isError) 12 else 20,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ThinkingRow() {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.padding(top = 4.dp)
+    ) {
+        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+        Text(
+            text = "Thinking…",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }

@@ -1,14 +1,18 @@
 package com.opencode.mobile.ui.viewmodel
 
+import android.os.SystemClock
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.opencode.mobile.data.ModelRef
 import com.opencode.mobile.data.OpencodeRepository
 import com.opencode.mobile.data.PendingPermission
+import com.opencode.mobile.data.PendingQuestion
 import com.opencode.mobile.data.Realtime
 import com.opencode.mobile.data.SessionMessageDto
 import com.opencode.mobile.data.SseManager
 import com.opencode.mobile.data.Todo
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,6 +30,7 @@ data class ChatUiState(
     val messages: List<SessionMessageDto> = emptyList(),
     val todos: List<Todo> = emptyList(),
     val pendingPermissions: List<PendingPermission> = emptyList(),
+    val pendingQuestions: List<PendingQuestion> = emptyList(),
     val model: ModelRef? = null,
     val agent: String = "build",
     val error: String? = null,
@@ -39,6 +44,12 @@ class ChatViewModel(
 ) : ViewModel() {
     private val _ui = MutableStateFlow(ChatUiState())
     val ui: StateFlow<ChatUiState> = _ui
+
+    // Streaming write-buffer: deltas mutate `working` at wire speed, the UI
+    // publishes at most every frame-budget so text flows instead of stuttering.
+    private var working: List<SessionMessageDto> = emptyList()
+    private var lastFlush = 0L
+    private var flushJob: Job? = null
 
     init {
         if (events != null) {
@@ -54,9 +65,24 @@ class ChatViewModel(
             try {
                 val msgs = repo.messages(sessionId)
                 val todos = repo.todos(sessionId)
+                val perms = repo.pendingPermissions().filter { it.sessionID == sessionId }
+                    .mapNotNull { dto ->
+                        Realtime.permission(
+                            buildJsonObject {
+                                put("id", dto.id)
+                                put("sessionID", dto.sessionID)
+                                put("permission", dto.permission)
+                            }
+                        )?.copy(patterns = dto.patterns)
+                    }
+                val questions = repo.pendingQuestions().filter { it.sessionID == sessionId }
+                    .map { PendingQuestion(it.id, it.sessionID, it.questions) }
+                working = msgs
                 _ui.value = _ui.value.copy(
-                    loading = false, sending = false, messages = msgs, todos = todos
+                    loading = false, sending = false, messages = msgs, todos = todos,
+                    pendingPermissions = perms, pendingQuestions = questions
                 )
+                lastFlush = SystemClock.uptimeMillis()
             } catch (e: Exception) {
                 _ui.value = _ui.value.copy(loading = false, error = e.message)
             }
@@ -75,15 +101,17 @@ class ChatViewModel(
         _ui.value = _ui.value.copy(model = null)
     }
 
-    /** Single entry point for the composer: slash commands go to /command, else chat. */
+    /** Composer entry: `/command`, `!shell …`, or plain chat. */
     fun sendSmart(raw: String) {
         val t = raw.trim()
         if (t.isEmpty()) return
-        if (t.startsWith("/")) {
-            val parts = t.removePrefix("/").split(" ", limit = 2)
-            runSlashCommand(parts[0], parts.getOrElse(1) { "" })
-        } else {
-            send(t)
+        when {
+            t.startsWith("/") -> {
+                val parts = t.removePrefix("/").split(" ", limit = 2)
+                runSlashCommand(parts[0], parts.getOrElse(1) { "" })
+            }
+            t.startsWith("!") -> runShell(t.removePrefix("!").trim())
+            else -> send(t)
         }
     }
 
@@ -125,9 +153,35 @@ class ChatViewModel(
     fun respondPermission(permissionId: String, response: String) {
         viewModelScope.launch {
             try {
-                repo.respondPermission(sessionId, permissionId, response, null)
+                repo.respondPermission(sessionId, permissionId, response)
                 _ui.value = _ui.value.copy(
                     pendingPermissions = _ui.value.pendingPermissions.filterNot { it.id == permissionId }
+                )
+            } catch (e: Exception) {
+                _ui.value = _ui.value.copy(error = e.message)
+            }
+        }
+    }
+
+    fun replyQuestion(requestId: String, answers: List<List<String>>) {
+        viewModelScope.launch {
+            try {
+                repo.replyQuestion(requestId, answers)
+                _ui.value = _ui.value.copy(
+                    pendingQuestions = _ui.value.pendingQuestions.filterNot { it.id == requestId }
+                )
+            } catch (e: Exception) {
+                _ui.value = _ui.value.copy(error = e.message)
+            }
+        }
+    }
+
+    fun rejectQuestion(requestId: String) {
+        viewModelScope.launch {
+            try {
+                repo.rejectQuestion(requestId)
+                _ui.value = _ui.value.copy(
+                    pendingQuestions = _ui.value.pendingQuestions.filterNot { it.id == requestId }
                 )
             } catch (e: Exception) {
                 _ui.value = _ui.value.copy(error = e.message)
@@ -181,19 +235,38 @@ class ChatViewModel(
         }
     }
 
+    fun runShell(command: String) {
+        if (command.isBlank() || _ui.value.sending) return
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(sending = true, error = null)
+            try {
+                repo.runShell(sessionId, _ui.value.agent.ifBlank { "build" }, command, _ui.value.model)
+                refresh()
+            } catch (e: Exception) {
+                _ui.value = _ui.value.copy(error = e.message)
+            } finally {
+                _ui.value = _ui.value.copy(sending = false)
+            }
+        }
+    }
+
     // -- live event feed -----------------------------------------------------
 
     private fun onEvent(type: String, raw: String) {
         when (type) {
+            "message.part.delta" -> onPartDelta(raw)
             "message.part.updated" -> onPartUpdated(raw)
             "message.updated" -> onMessageUpdated(raw)
             "message.removed" -> onMessageRemoved(raw)
             "message.part.removed" -> onPartRemoved(raw)
             "session.status", "session.idle" -> onStatus(raw, type)
-            "permission.updated" -> onPermission(raw)
+            "permission.asked" -> onPermission(raw)
             "permission.replied" -> onPermissionReplied(raw)
+            "question.asked" -> onQuestion(raw)
+            "question.replied", "question.rejected" -> onQuestionReplied(raw)
             "todo.updated" -> onTodos(raw)
             "session.error" -> onSessionError(raw)
+            "server.connected" -> refresh()
         }
     }
 
@@ -203,46 +276,77 @@ class ChatViewModel(
         return if (sid == sessionId) p else null
     }
 
+    /** Publish the write-buffer immediately. */
+    private fun flush() {
+        flushJob?.cancel()
+        flushJob = null
+        lastFlush = SystemClock.uptimeMillis()
+        _ui.value = _ui.value.copy(messages = working)
+    }
+
+    /**
+     * Apply a streaming mutation, publishing at most every frame-budget
+     * (~15fps) so rapid token deltas batch into smooth frames.
+     */
+    private fun streamMutate(transform: (List<SessionMessageDto>) -> List<SessionMessageDto>) {
+        working = transform(working)
+        val now = SystemClock.uptimeMillis()
+        if (now - lastFlush >= 64) {
+            flush()
+        } else if (flushJob == null) {
+            flushJob = viewModelScope.launch {
+                delay(64)
+                flushJob = null
+                flush()
+            }
+        }
+    }
+
+    private fun onPartDelta(raw: String) {
+        val p = Realtime.props(raw) ?: return
+        val d = Realtime.partDelta(p) ?: return
+        // Delta events carry no sessionID: only apply to a message we show.
+        if (working.none { Realtime.str(it.info, "id") == d.messageId }) return
+        streamMutate { msgs -> appendField(msgs, d.messageId, d.partId, d.field, d.delta) }
+    }
+
     private fun onPartUpdated(raw: String) {
         val p = forSession(raw) ?: return
         val part = Realtime.part(p) ?: return
         val mid = Realtime.str(part, "messageID", "messageId") ?: return
         val pid = Realtime.str(part, "id") ?: return
         val delta = Realtime.delta(p)
-        _ui.value = _ui.value.copy(messages = upsertPart(_ui.value.messages, mid, pid, part, delta))
+        streamMutate { msgs -> upsertPart(msgs, mid, pid, part, delta) }
     }
 
     private fun onMessageUpdated(raw: String) {
         val p = forSession(raw) ?: return
         val info = Realtime.messageInfo(p) ?: return
         val mid = Realtime.str(info, "id") ?: return
-        val cur = _ui.value.messages
-        val idx = cur.indexOfFirst { Realtime.str(it.info, "id") == mid }
-        _ui.value = _ui.value.copy(
-            messages = if (idx < 0) cur + SessionMessageDto(info, emptyList())
+        streamMutate { cur ->
+            val idx = cur.indexOfFirst { Realtime.str(it.info, "id") == mid }
+            if (idx < 0) cur + SessionMessageDto(info, emptyList())
             else cur.toMutableList().also { it[idx] = cur[idx].copy(info = info) }
-        )
+        }
     }
 
     private fun onMessageRemoved(raw: String) {
         val p = Realtime.props(raw) ?: return
         val (sid, mid, _) = Realtime.removedMessage(p)
         if (sid != sessionId || mid.isBlank()) return
-        _ui.value = _ui.value.copy(
-            messages = _ui.value.messages.filterNot { Realtime.str(it.info, "id") == mid }
-        )
+        streamMutate { msgs -> msgs.filterNot { Realtime.str(it.info, "id") == mid } }
     }
 
     private fun onPartRemoved(raw: String) {
         val p = Realtime.props(raw) ?: return
         val (sid, mid, pid) = Realtime.removedMessage(p)
         if (sid != sessionId || mid.isBlank() || pid.isNullOrBlank()) return
-        _ui.value = _ui.value.copy(
-            messages = _ui.value.messages.map { m ->
+        streamMutate { msgs ->
+            msgs.map { m ->
                 if (Realtime.str(m.info, "id") != mid) m
                 else m.copy(parts = m.parts.filterNot { Realtime.str(it, "id") == pid })
             }
-        )
+        }
     }
 
     private fun onStatus(raw: String, type: String) {
@@ -270,9 +374,27 @@ class ChatViewModel(
         val p = Realtime.props(raw) ?: return
         val sid = Realtime.sessionIdOf(p)
         if (sid != null && sid != sessionId) return
-        val pid = Realtime.str(p, "permissionID", "permissionId", "id") ?: return
+        val rid = Realtime.repliedRequestId(p) ?: return
         _ui.value = _ui.value.copy(
-            pendingPermissions = _ui.value.pendingPermissions.filterNot { it.id == pid }
+            pendingPermissions = _ui.value.pendingPermissions.filterNot { it.id == rid }
+        )
+    }
+
+    private fun onQuestion(raw: String) {
+        val p = Realtime.props(raw) ?: return
+        val q = Realtime.question(p) ?: return
+        if (q.sessionId != sessionId) return
+        val cur = _ui.value.pendingQuestions.filterNot { it.id == q.id }
+        _ui.value = _ui.value.copy(pendingQuestions = cur + q)
+    }
+
+    private fun onQuestionReplied(raw: String) {
+        val p = Realtime.props(raw) ?: return
+        val sid = Realtime.sessionIdOf(p)
+        if (sid != null && sid != sessionId) return
+        val rid = Realtime.repliedRequestId(p) ?: return
+        _ui.value = _ui.value.copy(
+            pendingQuestions = _ui.value.pendingQuestions.filterNot { it.id == rid }
         )
     }
 
@@ -284,9 +406,10 @@ class ChatViewModel(
     }
 
     private fun onSessionError(raw: String) {
-        val p = forSession(raw) ?: return
-        val msg = Realtime.str(p, "message", "error") ?: raw.take(200)
-        _ui.value = _ui.value.copy(error = msg, sending = false, liveBusy = false)
+        val p = Realtime.props(raw) ?: return
+        val (sid, msg) = Realtime.sessionError(p) ?: return
+        if (sid != sessionId) return
+        _ui.value = _ui.value.copy(error = msg.take(400), sending = false, liveBusy = false)
     }
 
     private fun upsertPart(
@@ -316,6 +439,26 @@ class ChatViewModel(
         return messages.toMutableList().also { it[idx] = msg.copy(parts = parts) }
     }
 
+    /** Append a delta to an arbitrary string field (mirrors web `part[field] += delta`). */
+    private fun appendField(
+        messages: List<SessionMessageDto>,
+        messageId: String,
+        partId: String,
+        field: String,
+        delta: String
+    ): List<SessionMessageDto> {
+        val idx = messages.indexOfFirst { Realtime.str(it.info, "id") == messageId }
+        if (idx < 0) return messages
+        val msg = messages[idx]
+        val pIdx = msg.parts.indexOfFirst { Realtime.str(it, "id") == partId }
+        if (pIdx < 0) return messages
+        val old = msg.parts[pIdx]
+        val cur = old[field]?.jsonPrimitive?.content ?: ""
+        val merged = JsonObject(old + (field to JsonPrimitive(cur + delta)))
+        val parts = msg.parts.toMutableList().also { it[pIdx] = merged }
+        return messages.toMutableList().also { it[idx] = msg.copy(parts = parts) }
+    }
+
     private fun mergePart(old: JsonObject?, incoming: JsonObject, delta: String?): JsonObject {
         if (delta == null) return incoming
         val base = old ?: incoming
@@ -339,15 +482,15 @@ class ChatViewModel(
                 }
             )
         )
-        _ui.value = _ui.value.copy(messages = _ui.value.messages + msg)
+        working = working + msg
+        flush()
     }
 
     private fun removeLocal() {
-        _ui.value = _ui.value.copy(
-            messages = _ui.value.messages.filterNot {
-                (Realtime.str(it.info, "id") ?: "").startsWith("local-")
-            }
-        )
+        working = working.filterNot {
+            (Realtime.str(it.info, "id") ?: "").startsWith("local-")
+        }
+        flush()
     }
 }
 

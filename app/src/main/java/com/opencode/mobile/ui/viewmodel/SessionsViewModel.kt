@@ -70,6 +70,17 @@ class SessionsViewModel(
         }
     }
 
+    fun rename(id: String, title: String) {
+        viewModelScope.launch {
+            try {
+                repo.renameSession(id, title)
+                refresh()
+            } catch (e: Exception) {
+                _ui.value = _ui.value.copy(error = e.message)
+            }
+        }
+    }
+
     /** Live session list: statuses flip instantly, creates/deletes refresh the list. */
     private fun startLive(events: SharedFlow<SseManager.ServerEvent>) {
         if (liveStarted) return
@@ -84,7 +95,8 @@ class SessionsViewModel(
                             statuses = _ui.value.statuses + (sid to SessionStatusResponse(type = t))
                         )
                     }
-                    "session.created", "session.deleted", "session.updated" -> autoRefresh()
+                    "session.created", "session.deleted", "session.updated",
+                    "session.renamed", "server.connected" -> autoRefresh()
                 }
             }
         }

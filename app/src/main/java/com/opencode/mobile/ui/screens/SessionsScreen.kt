@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -20,6 +21,7 @@ import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.layout.size
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -32,6 +34,7 @@ import com.opencode.mobile.data.Session
 fun SessionsDrawer(
     sessions: List<Session>,
     selectedId: String?,
+    busyIds: Set<String> = emptySet(),
     loading: Boolean,
     serverLabel: String,
     onNew: () -> Unit,
@@ -72,6 +75,14 @@ fun SessionsDrawer(
                     },
                     selected = s.id == selectedId,
                     onClick = { onOpen(s.id) },
+                    icon = {
+                        if (s.id in busyIds) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp
+                            )
+                        }
+                    },
                     badge = {
                         IconButton(onClick = { onDelete(s.id) }) {
                             Icon(

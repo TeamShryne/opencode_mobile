@@ -79,8 +79,20 @@ class OpencodeRepository(
         requireApi().summarizeSession(id, SummarizeRequest(providerID, modelID))
     suspend fun initSession(id: String, messageID: String, providerID: String, modelID: String) =
         requireApi().sessionInit(id, InitRequest(messageID, providerID, modelID))
-    suspend fun respondPermission(sessionID: String, permissionID: String, response: String, remember: Boolean?) =
-        requireApi().respondPermission(sessionID, permissionID, PermissionRespondRequest(response, remember))
+    suspend fun respondPermission(sessionID: String, permissionID: String, response: String) =
+        requireApi().respondPermission(sessionID, permissionID, PermissionRespondRequest(response))
+
+    suspend fun pendingPermissions() =
+        runCatching { requireApi().pendingPermissions() }.getOrDefault(emptyList())
+
+    suspend fun pendingQuestions() =
+        runCatching { requireApi().pendingQuestions() }.getOrDefault(emptyList())
+
+    suspend fun replyQuestion(requestID: String, answers: List<List<String>>) =
+        runCatching { requireApi().replyQuestion(requestID, QuestionReplyRequest(answers)) }.getOrDefault(false)
+
+    suspend fun rejectQuestion(requestID: String) =
+        runCatching { requireApi().rejectQuestion(requestID) }.getOrDefault(false)
 
     // -- messages -------------------------------------------------------------
     suspend fun messages(id: String) = requireApi().messages(id)
